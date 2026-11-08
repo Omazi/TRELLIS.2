@@ -1,15 +1,74 @@
 """Détourage des photos de plats pour TRELLIS 2 (menu AR).
 
-Deux modes :
+Trois modes :
+- cut_auto : (par défaut) garde automatiquement la nourriture, les sauces, l'assiette ou
+             la boîte, et retire le fond autour. Le contenant sert de socle au modèle 3D,
+             comme le fait Tripo. Aucun clic.
 - cut_dish : garde uniquement la nourriture (détourage automatique BiRefNet via rembg).
-- cut_all  : garde tout (contenant, papier, sauces...) et retire seulement les zones
-             que l'utilisateur désigne par des clics (segmentation SAM 2).
-             Le contenant sert alors de socle au modèle 3D, comme le fait Tripo.
+- cut_all  : garde tout et retire seulement les zones désignées par des clics (SAM 2).
 Les deux renvoient une image RGBA prête pour Trellis2ImageTo3DPipeline.run().
 """
 from typing import List, Optional, Sequence, Tuple
 import numpy as np
 from PIL import Image, ImageFilter
+
+
+DISH_ITEMS = ['plate', 'bowl', 'sauce cup', 'cup', 'glass', 'tray', 'takeout box',
+              'cutting board', 'basket', 'food']
+
+
+def _feathered_rgba(rgb: np.ndarray, mask: np.ndarray, feather: float = 1.2) -> Image.Image:
+    a = np.array(Image.fromarray((mask * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(feather)))
+    a[[0, -1], :] = 0; a[:, [0, -1]] = 0   # bord transparent : TRELLIS utilise alors notre détourage
+    return Image.fromarray(np.dstack([rgb, a]))
+
+
+class AutoDishSegmenter:
+    """Nourriture (rembg) + objets du plat détectés par texte (YOLOE) -> enveloppe convexe = plat + contenant."""
+
+    def __init__(self, rembg_model: str = 'birefnet-general', detector_weights: str = 'yoloe-11l-seg.pt',
+                 items: Sequence[str] = DISH_ITEMS, conf: float = 0.25):
+        import rembg
+        from ultralytics import YOLOE
+        try:
+            self.session = rembg.new_session(rembg_model)
+        except Exception:                       # téléchargement coupé : modèle plus léger
+            self.session = rembg.new_session('isnet-general-use')
+        self.items = list(items); self.conf = conf
+        self.detector = YOLOE(detector_weights)
+        self.detector.set_classes(self.items, self.detector.get_text_pe(self.items))
+
+    def masks(self, image: Image.Image):
+        import rembg
+        from PIL import ImageDraw
+        from scipy import ndimage
+        from skimage.morphology import convex_hull_image
+        img = image.convert('RGB'); A = np.array(img); H, W = A.shape[:2]
+        food = np.array(rembg.remove(img, session=self.session))[..., 3] > 127
+        r = self.detector.predict(A, conf=self.conf, verbose=False)[0]
+        items = Image.new('L', (W, H), 0); d = ImageDraw.Draw(items); found = []
+        if r.masks is not None:
+            for c, poly in zip(r.boxes.cls.tolist(), r.masks.xy):
+                if len(poly) >= 3:
+                    d.polygon([tuple(p) for p in poly], fill=255); found.append(self.items[int(c)])
+        elements = food | (np.array(items) > 0)
+        lab, n = ndimage.label(elements)        # ignore les miettes isolées (< 0,5 % de l'image)
+        if n:
+            sizes = ndimage.sum(elements, lab, range(1, n + 1))
+            elements = np.isin(lab, 1 + np.flatnonzero(sizes >= 0.005 * H * W))
+        if not elements.any():
+            return food, food, found
+        hull = convex_hull_image(elements)
+        hull = ndimage.binary_dilation(hull, iterations=max(2, int(0.01 * max(H, W))))
+        return food, hull, found
+
+    def __call__(self, image: Image.Image, keep_container: bool = True) -> Image.Image:
+        food, hull, _ = self.masks(image)
+        return _feathered_rgba(np.array(image.convert('RGB')), hull if keep_container else food)
+
+
+def cut_auto(image: Image.Image, keep_container: bool = True, segmenter: Optional[AutoDishSegmenter] = None) -> Image.Image:
+    return (segmenter or AutoDishSegmenter())(image, keep_container)
 
 
 def cut_dish(image: Image.Image, session=None) -> Image.Image:
@@ -52,11 +111,7 @@ class ClickSegmenter:
         return float(self.mask.mean())
 
     def rgba(self, feather: float = 1.2) -> Image.Image:
-        a = Image.fromarray((self.mask * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(feather))
-        a = np.array(a)
-        # bord transparent : TRELLIS doit voir de la transparence pour utiliser notre détourage
-        a[[0, -1], :] = 0; a[:, [0, -1]] = 0
-        return Image.fromarray(np.dstack([self.array, a]))
+        return _feathered_rgba(self.array, self.mask, feather)
 
     def preview(self, max_size: int = 700) -> Image.Image:
         """Aperçu : zones retirées en damier vert."""
