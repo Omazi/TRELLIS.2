@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Menu AR — démo</title>
+<script>self.ModelViewerElement = Object.assign(self.ModelViewerElement || {}, { meshoptDecoderLocation: "meshopt_decoder.js" });</script>
+<script type="module" src="model-viewer.min.js"></script>
+<style>
+  :root { --ink:#1d1a16; --muted:#7a7268; --accent:#c4501f; --paper:#f7f3ec; --card:#fff; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body { background:var(--paper); color:var(--ink); font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .wrap { max-width:520px; margin:0 auto; padding:28px 18px 40px; }
+  .eyebrow { font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); }
+  h1 { font-family:Georgia,"Times New Roman",serif; font-weight:400; font-size:30px; margin:6px 0 4px; }
+  .lead { color:var(--muted); font-size:15px; line-height:1.45; }
+  .dish { margin-top:22px; background:var(--card); border-radius:18px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,.05), 0 10px 30px rgba(60,40,20,.08); cursor:pointer; border:0; width:100%; text-align:left; display:block; }
+  .photo { position:relative; aspect-ratio:4/5; background:#eee center/cover no-repeat; }
+  .badge { position:absolute; right:12px; bottom:12px; display:flex; align-items:center; gap:8px; background:rgba(20,16,12,.78); color:#fff; padding:9px 14px; border-radius:999px; font-size:14px; font-weight:600; backdrop-filter:blur(6px); }
+  .badge svg { width:18px; height:18px; }
+  .info { padding:14px 16px 16px; }
+  .info h2 { font-size:18px; font-weight:650; }
+  .info p { color:var(--muted); font-size:14px; margin-top:3px; }
+  /* visionneuse plein écran */
+  .viewer { position:fixed; inset:0; background:var(--paper); display:none; flex-direction:column; z-index:10; }
+  .viewer.open { display:flex; }
+  .bar { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; }
+  .bar strong { font-size:16px; }
+  .close { border:0; background:#e9e2d7; width:38px; height:38px; border-radius:50%; font-size:20px; line-height:38px; color:var(--ink); cursor:pointer; }
+  model-viewer { flex:1; width:100%; background:radial-gradient(circle at 50% 45%, #fff 0%, var(--paper) 72%); --progress-bar-color:var(--accent); }
+  .hint { text-align:center; color:var(--muted); font-size:13px; padding:4px 16px 0; }
+  .actions { padding:14px 16px 22px; }
+  .ar { width:100%; border:0; border-radius:14px; padding:16px; font-size:17px; font-weight:650; background:var(--accent); color:#fff; display:flex; align-items:center; justify-content:center; gap:10px; cursor:pointer; }
+  .ar[disabled] { background:#d9d1c5; color:#6f675c; cursor:default; }
+  .ar svg { width:22px; height:22px; }
+  .note { text-align:center; color:var(--muted); font-size:12.5px; margin-top:9px; line-height:1.4; }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <div class="eyebrow">Démo · menu en réalité augmentée</div>
+  <h1>Le plat du jour</h1>
+  <p class="lead">Touchez la photo pour voir le plat en 3D, puis posez-le sur votre table.</p>
+
+  <button class="dish" id="openBtn" aria-label="Voir le plat en 3D">
+    <div class="photo" id="photo">
+      <span class="badge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="m3 7 9 5 9-5M12 12v10"/></svg>
+        Voir en 3D
+      </span>
+    </div>
+    <div class="info">
+      <h2>Wrap gratiné &amp; frites</h2>
+      <p>Pâte dorée au four, fromage fondu, frites maison.</p>
+    </div>
+  </button>
+</main>
+
+<section class="viewer" id="viewer" aria-modal="true" role="dialog">
+  <div class="bar"><strong>Wrap gratiné &amp; frites</strong><button class="close" id="closeBtn" aria-label="Fermer">×</button></div>
+  <model-viewer id="mv" alt="Modèle 3D du plat"
+    ar ar-modes="scene-viewer quick-look webxr" ar-scale="fixed" ar-placement="floor"
+    camera-controls touch-action="pan-y" camera-orbit="0deg 38deg 85%" min-camera-orbit="auto 0deg auto" max-camera-orbit="auto 180deg auto"
+    shadow-intensity="1.1" shadow-softness="0.7" exposure="1.1" environment-image="neutral" interaction-prompt="auto">
+    <button slot="ar-button" style="display:none"></button>
+  </model-viewer>
+  <p class="hint">Glissez pour tourner · pincez pour zoomer</p>
+  <div class="actions">
+    <button class="ar" id="arBtn" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="m12 7-5 3v5l5 3 5-3v-5z"/></svg>
+      <span id="arLabel">Chargement…</span>
+    </button>
+    <p class="note" id="arNote"></p>
+  </div>
+</section>
+
+<script>
+  const MODEL_SRC = 'plat.glb', PHOTO_SRC = 'photo.jpg';   /* remplacés dans la version aperçu */
+  const mv = document.getElementById('mv'), viewer = document.getElementById('viewer');
+  const arBtn = document.getElementById('arBtn'), arLabel = document.getElementById('arLabel'), arNote = document.getElementById('arNote');
+  document.getElementById('photo').style.backgroundImage = `url(${PHOTO_SRC})`;
+  let loaded = false;
+  function open() {
+    viewer.classList.add('open');
+    if (!loaded) { mv.src = MODEL_SRC; loaded = true; }
+  }
+  document.getElementById('openBtn').addEventListener('click', open);
+  document.getElementById('closeBtn').addEventListener('click', () => viewer.classList.remove('open'));
+  mv.addEventListener('load', () => {
+    if (mv.canActivateAR) { arBtn.disabled = false; arLabel.textContent = 'Voir sur ma table'; arNote.textContent = 'Visez une table bien éclairée et bougez lentement le téléphone de gauche à droite jusqu’à ce que le plat apparaisse. Évitez les surfaces unies, brillantes ou sombres.'; }
+    else { arLabel.textContent = 'Réalité augmentée sur téléphone'; arNote.textContent = 'Ouvrez cette page sur iPhone (Safari) ou Android (Chrome) pour poser le plat sur votre table.'; }
+  });
+  mv.addEventListener('error', () => { arLabel.textContent = 'Modèle indisponible'; });
+  arBtn.addEventListener('click', () => mv.activateAR());
+</script>
+</body>
+</html>

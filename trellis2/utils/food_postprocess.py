@@ -38,3 +38,26 @@ def solidify_base(vertices, faces, up_axis=1, start=-0.15, full=-0.55, smooth_it
     out = V.copy(); out[:, up_axis] = Vu[inv, up_axis]
     return out, w[inv]
 
+
+
+def paint_underside(texture, V, F, UV, weights=None, color=(46, 40, 34), up_axis=1, threshold=-0.7, grow=3):
+    """Peint d'une couleur unie (carton/assiette sombre) le dessous plat du modèle, pour qu'il
+    ne montre plus la nourriture « en transparence » vu d'en bas. Retourne une nouvelle image PIL.
+    weights : poids optionnels par sommet (ex. ceux de solidify_base) ; sinon d'après les normales."""
+    from PIL import Image
+    from scipy.ndimage import distance_transform_edt
+    from .photo_projection import _texel_positions, vertex_normals
+    V = np.asarray(V, np.float64); F = np.asarray(F)
+    fn = np.cross(V[F[:, 1]] - V[F[:, 0]], V[F[:, 2]] - V[F[:, 0]])
+    fn /= np.linalg.norm(fn, axis=1, keepdims=True) + 1e-12
+    down = (fn[:, up_axis] < threshold).astype(np.float32)         # faces tournées vers le sol
+    w = np.zeros(len(V), np.float32); np.maximum.at(w, F.ravel(), np.repeat(down, 3))
+    tex = np.asarray(texture.convert('RGB'), np.float32); T = tex.shape[0]
+    _, wt, used = _texel_positions(V, F, np.asarray(UV), np.repeat(w[:, None], 3, 1), T)
+    idx = distance_transform_edt(~used, return_distances=False, return_indices=True)
+    a = wt[idx[0], idx[1], :1]
+    if grow:                                                       # déborde un peu : efface les liserés
+        from scipy.ndimage import grey_dilation
+        a = grey_dilation(a[..., 0], size=(2 * grow + 1, 2 * grow + 1))[..., None]
+    out = tex * (1 - a) + np.array(color, np.float32) * a
+    return Image.fromarray(out.clip(0, 255).astype(np.uint8))

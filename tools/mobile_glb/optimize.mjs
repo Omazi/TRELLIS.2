@@ -2,7 +2,7 @@
 // taille_m : plus grand côté horizontal du plat en mètres. ombre : part de la hauteur assombrie près de la table (0 = désactivé).
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
-import { dedup, weld, prune, simplify, textureCompress, quantize, getBounds } from '@gltf-transform/functions';
+import { dedup, weld, prune, simplify, textureCompress, meshopt, getBounds } from '@gltf-transform/functions';
 import { MeshoptSimplifier, MeshoptEncoder, MeshoptDecoder } from 'meshoptimizer';
 import sharp from 'sharp';
 const [,, inp, out, size = '0.30', aoArg = '0.35'] = process.argv;
@@ -46,12 +46,16 @@ for (const m of doc.getRoot().listMaterials()) {
     m.setMetallicRoughnessTexture(null);
   }
 }
+// on ne simplifie que les très gros maillages : la simplification fait « fondre » les détails fins (frites)
+let faces = 0;
+for (const m of doc.getRoot().listMeshes()) for (const p of m.listPrimitives()) faces += p.getIndices().getCount() / 3;
+const MAX_FACES = 400000;
 await doc.transform(
   dedup(), weld(),
-  simplify({ simplifier: MeshoptSimplifier, ratio: 0.5, error: 0.002 }),
+  ...(faces > MAX_FACES ? [simplify({ simplifier: MeshoptSimplifier, ratio: MAX_FACES / faces, error: 0.0005 })] : []),
   textureCompress({ encoder: sharp, targetFormat: 'jpeg', resize: [2048, 2048], quality: 85 }),
   prune(),
-  quantize(),
+  meshopt({ encoder: MeshoptEncoder, level: 'medium' }),   // compression forte (décodeur inclus dans model-viewer)
 );
 await io.write(out, doc);
 b = getBounds(scene);
