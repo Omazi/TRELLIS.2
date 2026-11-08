@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Menu AR — génération en cours</title>
+<style>
+  :root { --ink:#1d1a16; --muted:#7a7268; --accent:#c4501f; --paper:#f7f3ec; --line:#e6ded2; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--paper); color:var(--ink); font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .wrap { max-width:520px; margin:0 auto; padding:26px 18px 48px; }
+  a.back { color:var(--muted); font-size:14px; text-decoration:none; }
+  h1 { font-family:Georgia,"Times New Roman",serif; font-weight:400; font-size:28px; margin:14px 0 4px; }
+  .lead { color:var(--muted); font-size:15px; }
+  .photo { margin-top:18px; width:100%; max-height:300px; object-fit:cover; border-radius:16px; }
+  ol { list-style:none; margin-top:18px; background:#fff; border-radius:16px; padding:6px 16px; }
+  li { display:flex; align-items:center; gap:12px; padding:12px 0; border-bottom:1px solid var(--line); font-size:15px; color:var(--muted); }
+  li:last-child { border-bottom:0; }
+  .dot { width:22px; height:22px; border-radius:50%; border:2px solid var(--line); flex:none; display:grid; place-items:center; font-size:13px; color:#fff; }
+  li.now { color:var(--ink); font-weight:600; }
+  li.now .dot { border-color:var(--accent); border-top-color:transparent; animation:spin 1s linear infinite; }
+  li.ok { color:var(--ink); }
+  li.ok .dot { background:#2e7d32; border-color:#2e7d32; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .meta { margin-top:12px; color:var(--muted); font-size:13px; text-align:center; }
+  .err { margin-top:16px; background:#fdecea; color:#8a1c12; padding:14px; border-radius:12px; font-size:14px; display:none; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <a class="back" href="/">← Nouveau plat</a>
+  <h1 id="title">Génération en cours</h1>
+  <p class="lead">Comptez 2 à 4 minutes. Vous pouvez garder cette page ouverte.</p>
+  <img class="photo" id="photo" alt="">
+  <ol id="steps"></ol>
+  <p class="meta" id="meta"></p>
+  <div class="err" id="err"></div>
+</main>
+<script>
+  const id = location.pathname.split('/').pop();
+  const STEPS = [['segmentation', 'Détourage du plat'], ['generation', 'Génération 3D'], ['mesh', 'Maillage et texture'],
+                 ['colors', 'Couleurs recalées sur la photo'], ['mobile', 'Optimisation pour téléphone']];
+  const order = ['queued', ...STEPS.map(s => s[0]), 'done'];
+  document.getElementById('photo').src = '/files/' + id + '/photo.jpg';
+  document.getElementById('photo').onerror = e => { e.target.style.display = 'none'; };
+  function render(st) {
+    const cur = order.indexOf(st.step);
+    document.getElementById('steps').innerHTML = STEPS.map(([k, label], i) => {
+      const idx = i + 1, cls = st.step === 'error' ? '' : idx < cur ? 'ok' : idx === cur ? 'now' : '';
+      return `<li class="${cls}"><span class="dot">${cls === 'ok' ? '✓' : ''}</span>${label}</li>`;
+    }).join('');
+    document.getElementById('title').textContent = st.name || 'Génération en cours';
+    const m = document.getElementById('meta');
+    if (st.step === 'queued') m.textContent = 'En attente : ' + (st.queue_position || 1) + 'e dans la file';
+    else if (st.elapsed) m.textContent = st.elapsed + ' s écoulées';
+  }
+  async function poll() {
+    try {
+      const r = await fetch('/api/jobs/' + id); const st = await r.json();
+      if (!r.ok) throw new Error(st.detail || r.status);
+      render(st);
+      if (st.step === 'done') { location.replace('/j/' + id); return; }
+      if (st.step === 'error') {
+        const e = document.getElementById('err'); e.style.display = 'block';
+        e.textContent = 'La génération a échoué.\n' + (st.error || '');
+        return;
+      }
+    } catch (x) { document.getElementById('meta').textContent = 'Connexion perdue, nouvelle tentative…'; }
+    setTimeout(poll, 2000);
+  }
+  poll();
+</script>
+</body>
+</html>
