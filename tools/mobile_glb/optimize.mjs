@@ -36,9 +36,19 @@ if (AO > 0) {
     prim.setAttribute('COLOR_0', doc.createAccessor().setType('VEC3').setArray(col).setBuffer(pos.getBuffer()));
   }
 }
+// texture métal/rugosité quasi uniforme (cas de TRELLIS sur la nourriture) -> remplacée par 2 valeurs
+for (const m of doc.getRoot().listMaterials()) {
+  const t = m.getMetallicRoughnessTexture(); if (!t) continue;
+  const { channels } = await sharp(Buffer.from(t.getImage())).stats();
+  if (channels[1].stdev < 25 && channels[2].stdev < 12) {   // rugosité peu variable, pas de métal
+    m.setRoughnessFactor(m.getRoughnessFactor() * channels[1].mean / 255);
+    m.setMetallicFactor(m.getMetallicFactor() * channels[2].mean / 255);
+    m.setMetallicRoughnessTexture(null);
+  }
+}
 await doc.transform(
   dedup(), weld(),
-  simplify({ simplifier: MeshoptSimplifier, ratio: 0.5, error: 0.0005 }),
+  simplify({ simplifier: MeshoptSimplifier, ratio: 0.5, error: 0.002 }),
   textureCompress({ encoder: sharp, targetFormat: 'jpeg', resize: [2048, 2048], quality: 85 }),
   prune(),
   quantize(),
