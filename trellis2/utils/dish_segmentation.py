@@ -20,14 +20,45 @@ def _weights(name: str) -> str:
     return os.path.join(d, name) if d and os.path.exists(os.path.join(d, name)) else name
 
 
-DISH_ITEMS = ['plate', 'bowl', 'sauce cup', 'cup', 'glass', 'tray', 'takeout box',
+DISH_ITEMS = ['plate', 'bowl', 'sauce cup', 'cup', 'glass', 'takeout box',
               'cutting board', 'basket', 'food']
+# Pas de « tray » : le plateau (ou la table) est le support, pas le plat. Un objet détecté qui
+# touche deux bords de la photo ou en couvre plus de 45 % est traité comme support et ignoré.
 
 
 def _feathered_rgba(rgb: np.ndarray, mask: np.ndarray, feather: float = 1.2) -> Image.Image:
     a = np.array(Image.fromarray((mask * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(feather)))
     a[[0, -1], :] = 0; a[:, [0, -1]] = 0   # bord transparent : TRELLIS utilise alors notre détourage
     return Image.fromarray(np.dstack([rgb, a]))
+
+
+def _trim_background(rgb: np.ndarray, hull: np.ndarray, keep: np.ndarray, tol: float = 0.12,
+                     max_cut: float = 0.06) -> np.ndarray:
+    """Retire de l'enveloppe convexe les poches de fond (plateau, table) qu'elle englobe entre
+    deux débords (salade qui dépasse du bol, etc.) : pixels hors détourage, reliés au bord de
+    l'enveloppe et de la couleur du fond juste autour. Le bord du bol rogné par le détourage
+    (blanc, pas couleur fond) est gardé."""
+    from scipy import ndimage
+    on_border = hull[0].sum() + hull[-1].sum() + hull[:, 0].sum() + hull[:, -1].sum()
+    perimeter = (hull & ~ndimage.binary_erosion(hull)).sum()
+    if on_border > 0.05 * perimeter:
+        return hull                       # plat coupé par le cadre : le « fond » autour serait le contenant
+    lab = rgb.astype(np.float32) / 255
+    ring = ndimage.binary_dilation(hull, iterations=12) & ~ndimage.binary_dilation(hull, iterations=3)
+    if ring.sum() < 50:
+        return hull
+    bg = np.median(lab[ring], axis=0)
+    spread = np.median(np.abs(lab[ring] - bg).sum(1)) + tol      # fond texturé -> tolérance plus large
+    like_bg = np.abs(lab - bg).sum(2) < spread
+    cand = hull & ~keep & like_bg
+    edge = hull & ~ndimage.binary_erosion(hull, iterations=2)
+    lab_c, n = ndimage.label(cand)
+    if not n:
+        return hull
+    touching = np.unique(lab_c[edge & cand]); touching = touching[touching > 0]
+    out = hull & ~np.isin(lab_c, touching)
+    out = ndimage.binary_fill_holes(ndimage.binary_opening(out, iterations=2))
+    return out if (hull & ~out).sum() <= max_cut * hull.sum() else hull   # au-delà : trop risqué
 
 
 class AutoDishSegmenter:
@@ -41,7 +72,7 @@ class AutoDishSegmenter:
             self.session = rembg.new_session(rembg_model)
         except Exception:                       # téléchargement coupé : modèle plus léger
             self.session = rembg.new_session('isnet-general-use')
-        self.items = list(items); self.conf = conf
+        self.items = list(items); self.conf = conf; self.last_found = []
         self.detector = YOLOE(_weights(detector_weights))
         self.detector.set_classes(self.items, self.detector.get_text_pe(self.items))
 
@@ -53,24 +84,33 @@ class AutoDishSegmenter:
         img = image.convert('RGB'); A = np.array(img); H, W = A.shape[:2]
         food = np.array(rembg.remove(img, session=self.session))[..., 3] > 127
         r = self.detector.predict(A, conf=self.conf, verbose=False)[0]
-        items = Image.new('L', (W, H), 0); d = ImageDraw.Draw(items); found = []
+        items = np.zeros((H, W), bool); found = []
         if r.masks is not None:
             for c, poly in zip(r.boxes.cls.tolist(), r.masks.xy):
-                if len(poly) >= 3:
-                    d.polygon([tuple(p) for p in poly], fill=255); found.append(self.items[int(c)])
-        elements = food | (np.array(items) > 0)
+                if len(poly) < 3:
+                    continue
+                m = Image.new('L', (W, H), 0); ImageDraw.Draw(m).polygon([tuple(p) for p in poly], fill=255)
+                m = np.array(m) > 0
+                sides = int(m[0].any()) + int(m[-1].any()) + int(m[:, 0].any()) + int(m[:, -1].any())
+                if sides >= 2 or m.mean() > 0.45:          # plateau, table, planche géante : support
+                    continue
+                items |= ndimage.binary_erosion(m, iterations=3)   # masques YOLOE un peu gras
+                found.append(self.items[int(c)])
+        elements = food | items
         lab, n = ndimage.label(elements)        # ignore les miettes isolées (< 0,5 % de l'image)
         if n:
             sizes = ndimage.sum(elements, lab, range(1, n + 1))
             elements = np.isin(lab, 1 + np.flatnonzero(sizes >= 0.005 * H * W))
         if not elements.any():
             return food, food, found
-        hull = convex_hull_image(elements)
-        hull = ndimage.binary_dilation(hull, iterations=max(2, int(0.01 * max(H, W))))
+        # enveloppe convexe : referme le bord du bol/de la boîte que le détourage aurait rogné,
+        # sans marge autour (une marge ajoutait un liseré de plateau, devenu un socle noir en 3D)
+        hull = ndimage.binary_dilation(convex_hull_image(elements), iterations=1)
+        hull = _trim_background(A, hull, ndimage.binary_dilation(elements, iterations=2))
         return food, hull, found
 
     def __call__(self, image: Image.Image, keep_container: bool = True) -> Image.Image:
-        food, hull, _ = self.masks(image)
+        food, hull, self.last_found = self.masks(image)
         return _feathered_rgba(np.array(image.convert('RGB')), hull if keep_container else food)
 
 

@@ -94,7 +94,7 @@ def create_app(run_job: Callable, data_dir: str, access_key: str) -> FastAPI:
                 res = run_job(img, workdir=job_dir(jid), mode=st['mode'], size_m=st['size_m'],
                               progress=lambda step: write_state(jid, step=step))
                 write_state(jid, step='done', finished=time.time(), result={
-                    k: v for k, v in res.items() if k in ('camera', 'seconds', 'size_mb', 'texture', 'texture_error')})
+                    k: v for k, v in res.items() if k in ('camera', 'seconds', 'size_mb', 'texture', 'texture_error', 'version', 'objets')})
             except Exception as e:                       # l'erreur est affichée sur la page
                 traceback.print_exc()
                 write_state(jid, step='error', error=f'{type(e).__name__}: {e}'[:600], finished=time.time())
@@ -176,6 +176,10 @@ def create_app(run_job: Callable, data_dir: str, access_key: str) -> FastAPI:
         extra = "<script>document.getElementById('openBtn').click()</script>"      # ouvre la 3D directement
         if (st.get('result') or {}).get('texture') == 'ia' and os.path.exists(os.path.join(job_dir(jid), 'plat_mobile_photo.glb')):
             extra += TEXTURE_SWITCH.replace('__ID__', jid)
+        r = st.get('result') or {}
+        info = f"version {r.get('version', 'ancienne')} · texture {r.get('texture', 'photo')}"
+        extra += ('<div style="position:fixed;left:8px;bottom:6px;z-index:99;font:11px system-ui;color:#9a9288">'
+                  + info.replace('<', '&lt;') + '</div>')
         return html.replace('</body>', extra + '\n</body>')
 
     def page_viewer() -> str:

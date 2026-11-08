@@ -18,6 +18,15 @@ from PIL import Image
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MOBILE_TOOLS = os.path.join(ROOT, 'tools', 'mobile_glb')
 
+
+def code_version() -> str:
+    """Commit du code réellement chargé (écrit dans chaque résultat, pour savoir quelle version a tourné)."""
+    r = subprocess.run(['git', '-C', ROOT, 'rev-parse', '--short', 'HEAD'], text=True, capture_output=True)
+    return r.stdout.strip() or 'inconnue'
+
+
+CODE_VERSION = code_version()
+
 STEPS = [
     ('segmentation', 'Détourage du plat'),
     ('generation', 'Génération 3D (TRELLIS 2)'),
@@ -151,6 +160,7 @@ class MenuARPipeline:
 
         return dict(mobile_glb=mobile, mobile_photo_glb=mobile_photo, hd_glb=hd_ia or hd_photo,
                     photo=os.path.join(workdir, 'photo.jpg'), texture='ia' if hd_ia else 'photo',
-                    texture_error=texture_error,
+                    texture_error=texture_error, version=CODE_VERSION,
+                    objets=list(getattr(self.segmenter, 'last_found', []) or []),
                     camera=dict(az=cam['az'], el=cam['el'], roll=cam['roll'], iou=cam['iou']),
                     seconds=timings, size_mb=round(os.path.getsize(mobile) / 1e6, 2))
