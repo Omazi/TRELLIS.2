@@ -1,0 +1,1 @@
+Eigen vendored from https://gitlab.com/libeigen/eigen (commit 21e4582d1739107337a03460c81412981130373e, via github.com/eigen-mirror/eigen). License: MPL-2.0.

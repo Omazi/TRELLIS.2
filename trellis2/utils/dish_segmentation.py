@@ -13,6 +13,13 @@ import numpy as np
 from PIL import Image, ImageFilter
 
 
+def _weights(name: str) -> str:
+    """Poids locaux (sauvegarde Drive) si MENU_AR_WEIGHTS les contient, sinon téléchargement normal."""
+    import os
+    d = os.environ.get('MENU_AR_WEIGHTS')
+    return os.path.join(d, name) if d and os.path.exists(os.path.join(d, name)) else name
+
+
 DISH_ITEMS = ['plate', 'bowl', 'sauce cup', 'cup', 'glass', 'tray', 'takeout box',
               'cutting board', 'basket', 'food']
 
@@ -35,7 +42,7 @@ class AutoDishSegmenter:
         except Exception:                       # téléchargement coupé : modèle plus léger
             self.session = rembg.new_session('isnet-general-use')
         self.items = list(items); self.conf = conf
-        self.detector = YOLOE(detector_weights)
+        self.detector = YOLOE(_weights(detector_weights))
         self.detector.set_classes(self.items, self.detector.get_text_pe(self.items))
 
     def masks(self, image: Image.Image):
@@ -89,7 +96,7 @@ class ClickSegmenter:
         self.history: List[Tuple[int, int, bool]] = []
         if sam is None:
             from ultralytics import SAM
-            sam = SAM(sam_weights)
+            sam = SAM(_weights(sam_weights))
         self.sam = sam
 
     def object_at(self, x: int, y: int) -> np.ndarray:
