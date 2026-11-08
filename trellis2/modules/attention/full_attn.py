@@ -104,7 +104,10 @@ def scaled_dot_product_attention(*args, **kwargs):
         out = xops.memory_efficient_attention(q, k, v)
     elif config.BACKEND == 'flash_attn':
         if 'flash_attn' not in globals():
-            import flash_attn
+            try:
+                import flash_attn
+            except ImportError:
+                from trellis2.modules import flash_attn_sdpa as flash_attn
         if num_all_args == 1:
             out = flash_attn.flash_attn_qkvpacked_func(qkv)
         elif num_all_args == 2:

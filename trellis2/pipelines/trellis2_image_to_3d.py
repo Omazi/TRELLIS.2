@@ -79,12 +79,14 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         self._device = 'cpu'
 
     @classmethod
-    def from_pretrained(cls, path: str, config_file: str = "pipeline.json") -> "Trellis2ImageTo3DPipeline":
+    def from_pretrained(cls, path: str, config_file: str = "pipeline.json", load_rembg: bool = True) -> "Trellis2ImageTo3DPipeline":
         """
         Load a pretrained model.
 
         Args:
             path (str): The path to the model. Can be either local path or a Hugging Face repository.
+            load_rembg (bool): Load the background-removal model (briaai/RMBG-2.0, gated, non-commercial license).
+                Set to False when input images already have a transparent background.
         """
         pipeline = super().from_pretrained(path, config_file)
         args = pipeline._pretrained_args
@@ -102,7 +104,7 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         pipeline.tex_slat_normalization = args['tex_slat_normalization']
 
         pipeline.image_cond_model = getattr(image_feature_extractor, args['image_cond_model']['name'])(**args['image_cond_model']['args'])
-        pipeline.rembg_model = getattr(rembg, args['rembg_model']['name'])(**args['rembg_model']['args'])
+        pipeline.rembg_model = getattr(rembg, args['rembg_model']['name'])(**args['rembg_model']['args']) if load_rembg else None
         
         pipeline.low_vram = args.get('low_vram', True)
         pipeline.default_pipeline_type = args.get('default_pipeline_type', '1024_cascade')
@@ -141,6 +143,9 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         if has_alpha:
             output = input
         else:
+            if self.rembg_model is None:
+                raise ValueError('Image has no transparent background and no background-removal model is loaded '
+                                 '(from_pretrained(..., load_rembg=False)). Remove the background first (RGBA input).')
             input = input.convert('RGB')
             if self.low_vram:
                 self.rembg_model.to(self.device)

@@ -111,7 +111,10 @@ def sparse_windowed_scaled_dot_product_self_attention(
         out = xops.memory_efficient_attention(q, k, v, **attn_func_args)[0]             # [M, H, C]
     elif config.ATTN == 'flash_attn':
         if 'flash_attn' not in globals():
-            import flash_attn
+            try:
+                import flash_attn
+            except ImportError:
+                from trellis2.modules import flash_attn_sdpa as flash_attn
         out = flash_attn.flash_attn_varlen_qkvpacked_func(qkv_feats, **attn_func_args)  # [M, H, C]
 
     out = out[bwd_indices]      # [T, H, C]
@@ -179,7 +182,10 @@ def sparse_windowed_scaled_dot_product_cross_attention(
         out = xops.memory_efficient_attention(q, k, v, attn_bias=mask)[0]               # [M, H, C]
     elif config.ATTN == 'flash_attn':
         if 'flash_attn' not in globals():
-            import flash_attn
+            try:
+                import flash_attn
+            except ImportError:
+                from trellis2.modules import flash_attn_sdpa as flash_attn
         out = flash_attn.flash_attn_varlen_kvpacked_func(q_feats, kv_feats,
             cu_seqlens_q=q_attn_func_args['cu_seqlens'], cu_seqlens_k=kv_attn_func_args['cu_seqlens'],
             max_seqlen_q=q_attn_func_args['max_seqlen'], max_seqlen_k=kv_attn_func_args['max_seqlen'],
