@@ -1,0 +1,6 @@
+MV-Adapter (https://github.com/huanngzh/MV-Adapter, commit of 2025-06-26), Apache-2.0 (see LICENSE).
+Only the `mvadapter` package is vendored. Local changes:
+- mvadapter/utils/mesh_utils/cv_ops.py: CV-CUDA replaced by OpenCV/scipy (cvcuda has no CUDA 13 build).
+- mvadapter/pipelines/pipeline_texture.py: lazy import of mesh_process (open3d/pymeshlab only needed for UV unwrapping).
+- pipeline_texture.py, smart_paint.py: Poisson blending backend "torch-native" instead of "torch-cuda" (avoids compiling a CUDA extension at startup; Poisson blending is not used in our flow).
+Uses nvdiffrast (NVIDIA non-commercial license) for rendering: to be replaced before commercial use.

@@ -23,12 +23,14 @@ STEPS = [
     ('generation', 'Génération 3D (TRELLIS 2)'),
     ('mesh', 'Maillage et texture'),
     ('colors', 'Couleurs recalées sur la photo'),
+    ('texture', 'Texture haute définition (IA)'),
     ('mobile', 'Optimisation pour téléphone'),
 ]
 
 
 class MenuARPipeline:
-    def __init__(self, trellis_pipeline=None, segmenter=None, model_id: str = 'microsoft/TRELLIS.2-4B'):
+    def __init__(self, trellis_pipeline=None, segmenter=None, texturer=None, model_id: str = 'microsoft/TRELLIS.2-4B',
+                 hd_texture: bool = True):
         os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
         os.environ.setdefault('OPENCV_IO_ENABLE_OPENEXR', '1')
         if trellis_pipeline is None:
@@ -38,8 +40,17 @@ class MenuARPipeline:
         if segmenter is None:
             from trellis2.utils.dish_segmentation import AutoDishSegmenter
             segmenter = AutoDishSegmenter()
+        if hd_texture and texturer is None:
+            try:
+                from trellis2.utils.mv_texture import MVTexturer
+                texturer = MVTexturer()
+            except Exception:                    # le site reste utilisable avec la texture photo
+                import traceback; traceback.print_exc()
+                print('⚠️ Texture IA indisponible : seule la texture photo sera produite.')
+                texturer = None
         self.trellis = trellis_pipeline
         self.segmenter = segmenter
+        self.texturer = texturer          # None = pas de texture IA (seulement la version recalée sur la photo)
 
     @staticmethod
     def _node(script: str, *args: str) -> str:
@@ -102,16 +113,44 @@ class MenuARPipeline:
         cam = estimate_camera(V, F, P[..., 3] > 127, vertex_colors=vcol, photo_rgb=P[..., :3] / 255.)
         new_tex, stats = recolor_from_photo(base, V, F, UV, rgba, cam)
         new_tex = paint_underside(new_tex, V, F, UV)
-        tex_path = os.path.join(workdir, 'texture.png'); new_tex.save(tex_path)
-        self._node('retexture.mjs', hd, tex_path, hd)
+        tex_path = os.path.join(workdir, 'texture_photo.png'); new_tex.save(tex_path)
+        hd_photo = os.path.join(workdir, 'plat_hd_photo.glb')
+        self._node('retexture.mjs', hd, tex_path, hd_photo)
         mark('colors')
 
-        # 5. version mobile
+        # 5. texture haute définition par MV-Adapter (6 vues guidées par la photo et la géométrie)
+        hd_ia, texture_error = None, None
+        if self.texturer is not None:
+            say('texture')
+            import torch
+            torch.cuda.empty_cache()
+            try:
+                ia = self.texturer(hd, rgba, cam, workdir)
+                ia = paint_underside(ia, V, F, UV)          # même fond uni que la version photo
+                ia_path = os.path.join(workdir, 'texture_ia.png'); ia.save(ia_path)
+                out_path = os.path.join(workdir, 'plat_hd_ia.glb')
+                self._node('retexture.mjs', hd, ia_path, out_path)
+                hd_ia = out_path                             # seulement si tout a réussi
+            except Exception as e:                       # on garde la version photo plutôt que d'échouer
+                import traceback; traceback.print_exc()
+                texture_error = f'{type(e).__name__}: {e}'[:400]
+                hd_ia = None
+                torch.cuda.empty_cache()
+            mark('texture')
+
+        # 6. versions mobiles : plat_mobile.glb = texture IA (sinon photo), plat_mobile_photo.glb = texture photo
         say('mobile')
         mobile = os.path.join(workdir, 'plat_mobile.glb')
-        self._node('optimize.mjs', hd, mobile, str(size_m), '0.35')
+        mobile_photo = os.path.join(workdir, 'plat_mobile_photo.glb')
+        self._node('optimize.mjs', hd_photo, mobile_photo, str(size_m), '0.35')
+        if hd_ia:
+            self._node('optimize.mjs', hd_ia, mobile, str(size_m), '0.35')
+        else:
+            import shutil; shutil.copy(mobile_photo, mobile)
         mark('mobile')
 
-        return dict(mobile_glb=mobile, hd_glb=hd, photo=os.path.join(workdir, 'photo.jpg'),
+        return dict(mobile_glb=mobile, mobile_photo_glb=mobile_photo, hd_glb=hd_ia or hd_photo,
+                    photo=os.path.join(workdir, 'photo.jpg'), texture='ia' if hd_ia else 'photo',
+                    texture_error=texture_error,
                     camera=dict(az=cam['az'], el=cam['el'], roll=cam['roll'], iou=cam['iou']),
                     seconds=timings, size_mb=round(os.path.getsize(mobile) / 1e6, 2))

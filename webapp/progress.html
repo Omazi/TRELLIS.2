@@ -30,7 +30,7 @@
 <main class="wrap">
   <a class="back" href="/">← Nouveau plat</a>
   <h1 id="title">Génération en cours</h1>
-  <p class="lead">Comptez 2 à 4 minutes. Vous pouvez garder cette page ouverte.</p>
+  <p class="lead">Comptez 4 à 6 minutes. Vous pouvez garder cette page ouverte.</p>
   <img class="photo" id="photo" alt="">
   <ol id="steps"></ol>
   <p class="meta" id="meta"></p>
@@ -39,7 +39,8 @@
 <script>
   const id = location.pathname.split('/').pop();
   const STEPS = [['segmentation', 'Détourage du plat'], ['generation', 'Génération 3D'], ['mesh', 'Maillage et texture'],
-                 ['colors', 'Couleurs recalées sur la photo'], ['mobile', 'Optimisation pour téléphone']];
+                 ['colors', 'Couleurs recalées sur la photo'], ['texture', 'Texture haute définition (IA)'],
+                 ['mobile', 'Optimisation pour téléphone']];
   const order = ['queued', ...STEPS.map(s => s[0]), 'done'];
   document.getElementById('photo').src = '/files/' + id + '/photo.jpg';
   document.getElementById('photo').onerror = e => { e.target.style.display = 'none'; };

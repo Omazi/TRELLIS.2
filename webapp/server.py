@@ -30,10 +30,29 @@ STEP_LABELS = {
     'generation': 'Génération 3D',
     'mesh': 'Maillage et texture',
     'colors': 'Couleurs recalées sur la photo',
+    'texture': 'Texture haute définition (IA)',
     'mobile': 'Optimisation pour téléphone',
     'done': 'Terminé',
     'error': 'Erreur',
 }
+
+
+TEXTURE_SWITCH = '''
+<div id="texsw" style="position:absolute;top:62px;left:50%;transform:translateX(-50%);z-index:20;display:flex;
+  background:#efe8dd;border-radius:10px;padding:3px;font:14px system-ui,sans-serif">
+  <button data-f="plat_mobile.glb" class="on">Texture IA</button><button data-f="plat_mobile_photo.glb">Texture photo</button>
+</div>
+<style>#texsw button{white-space:nowrap;border:0;background:transparent;padding:8px 12px;border-radius:8px;color:#7a7268;cursor:pointer}
+#texsw button.on{background:#fff;color:#1d1a16;font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.08)}</style>
+<script>
+(function () {
+  const sw = document.getElementById('texsw'); document.getElementById('viewer').appendChild(sw);
+  sw.querySelectorAll('button').forEach(b => b.onclick = () => {
+    sw.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    document.getElementById('mv').src = '/files/__ID__/' + b.dataset.f;
+  });
+})();
+</script>'''
 
 
 def create_app(run_job: Callable, data_dir: str, access_key: str) -> FastAPI:
@@ -75,7 +94,7 @@ def create_app(run_job: Callable, data_dir: str, access_key: str) -> FastAPI:
                 res = run_job(img, workdir=job_dir(jid), mode=st['mode'], size_m=st['size_m'],
                               progress=lambda step: write_state(jid, step=step))
                 write_state(jid, step='done', finished=time.time(), result={
-                    k: v for k, v in res.items() if k in ('camera', 'seconds', 'size_mb')})
+                    k: v for k, v in res.items() if k in ('camera', 'seconds', 'size_mb', 'texture', 'texture_error')})
             except Exception as e:                       # l'erreur est affichée sur la page
                 traceback.print_exc()
                 write_state(jid, step='error', error=f'{type(e).__name__}: {e}'[:600], finished=time.time())
@@ -154,7 +173,10 @@ def create_app(run_job: Callable, data_dir: str, access_key: str) -> FastAPI:
         html = html.replace("const MODEL_SRC = 'plat.glb', PHOTO_SRC = 'photo.jpg';",
                             f"const MODEL_SRC = '/files/{jid}/plat_mobile.glb', PHOTO_SRC = '/files/{jid}/photo.jpg';")
         html = html.replace('<main class="wrap">', '<main class="wrap"><a href="/" style="color:#7a7268;font-size:14px;text-decoration:none">← Nouveau plat</a>', 1)
-        return html.replace('</body>', "<script>document.getElementById('openBtn').click()</script>\n</body>")   # ouvre la 3D directement
+        extra = "<script>document.getElementById('openBtn').click()</script>"      # ouvre la 3D directement
+        if (st.get('result') or {}).get('texture') == 'ia' and os.path.exists(os.path.join(job_dir(jid), 'plat_mobile_photo.glb')):
+            extra += TEXTURE_SWITCH.replace('__ID__', jid)
+        return html.replace('</body>', extra + '\n</body>')
 
     def page_viewer() -> str:
         with open(os.path.join(VIEWER_DIR, 'index.html'), encoding='utf-8') as f:
@@ -171,7 +193,7 @@ def create_app(run_job: Callable, data_dir: str, access_key: str) -> FastAPI:
     def files(jid: str, fname: str, request: Request):
         # pas de vérification de clé ici : Scene Viewer (Android) télécharge le GLB sans le cookie.
         # Les noms de dossier sont aléatoires (10 caractères) et les fichiers limités au résultat.
-        if fname not in ('plat_mobile.glb', 'photo.jpg'):
+        if fname not in ('plat_mobile.glb', 'plat_mobile_photo.glb', 'photo.jpg'):
             raise HTTPException(404)
         p = os.path.join(job_dir(jid), fname)
         if not os.path.exists(p):
