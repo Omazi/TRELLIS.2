@@ -80,3 +80,31 @@ def paint_underside(texture, V, F, UV, weights=None, color=None, up_axis=1, thre
         a = grey_dilation(a[..., 0], size=(2 * grow + 1, 2 * grow + 1))[..., None]
     out = tex * (1 - a) + np.array(color, np.float32) * a
     return Image.fromarray(out.clip(0, 255).astype(np.uint8))
+
+
+def floating_bits(V, F, max_area: float = 0.02, min_gap: float = 0.02) -> np.ndarray:
+    """Faces à retirer : petits morceaux détachés et éloignés du plat (un raisin du décor gardé
+    par erreur au détourage devient un petit cube qui flotte à côté de l'assiette).
+    Un morceau est retiré s'il fait moins de max_area de la surface totale ET s'il est à plus de
+    min_gap (fraction de la taille du plat) du morceau principal. Une sauce ou un sachet posé
+    contre le plat touche le reste : il est gardé. Renvoie un masque booléen par face."""
+    import trimesh
+    from scipy.spatial import cKDTree
+    m = trimesh.Trimesh(np.asarray(V, np.float64), np.asarray(F), process=False)
+    m.merge_vertices(merge_tex=True, merge_norm=True, digits_vertex=5)      # coutures UV recousues
+    comps = trimesh.graph.connected_components(m.face_adjacency, min_len=1)
+    area = m.area_faces; total = area.sum()
+    if len(comps) < 2 or total <= 0:
+        return np.zeros(len(F), bool)
+    comps = sorted(comps, key=lambda c: -area[c].sum())
+    main_v = np.unique(m.faces[comps[0]].ravel())
+    tree = cKDTree(m.vertices[main_v])
+    size = np.ptp(m.vertices, axis=0).max()
+    drop = np.zeros(len(F), bool)
+    for c in comps[1:]:
+        if area[c].sum() / total >= max_area:
+            continue
+        d, _ = tree.query(m.vertices[np.unique(m.faces[c].ravel())], k=1)
+        if d.min() > min_gap * size:
+            drop[c] = True
+    return drop

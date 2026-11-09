@@ -75,7 +75,7 @@ class MenuARPipeline:
             progress: Optional[Callable[[str], None]] = None) -> dict:
         import o_voxel
         import trimesh
-        from trellis2.utils.food_postprocess import solidify_base, paint_underside
+        from trellis2.utils.food_postprocess import solidify_base, paint_underside, floating_bits
         from trellis2.utils.photo_projection import estimate_camera, recolor_from_photo, paste_photo
 
         os.makedirs(workdir, exist_ok=True)
@@ -108,6 +108,9 @@ class MenuARPipeline:
             decimation_target=300000, texture_size=4096, remesh=True, remesh_band=1, remesh_project=0,
         )
         del mesh
+        drop = floating_bits(glb.vertices, glb.faces)        # petits morceaux qui flottent à côté du plat
+        if drop.any():
+            glb.update_faces(~drop); glb.remove_unreferenced_vertices()
         glb.vertices, _ = solidify_base(glb.vertices, glb.faces)
         hd = os.path.join(workdir, 'plat_hd.glb'); glb.export(hd)
         del glb
