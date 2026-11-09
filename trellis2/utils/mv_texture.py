@@ -45,7 +45,7 @@ def alignment_matrix(cam: dict, mode: str = 'full') -> np.ndarray:
 
 
 class MVTexturer:
-    def __init__(self, device: str = 'cuda', ckpt_dir: Optional[str] = None,
+    def __init__(self, device: str = 'cuda', ckpt_dir: Optional[str] = None, dtype=None,
                  base_model: str = 'stabilityai/stable-diffusion-xl-base-1.0',
                  vae_model: str = 'madebyollin/sdxl-vae-fp16-fix', adapter: str = 'huanngzh/mv-adapter'):
         import torch
@@ -57,7 +57,7 @@ class MVTexturer:
         from mvadapter.pipelines.pipeline_texture import TexturePipeline
         from mvadapter.schedulers.scheduling_shift_snr import ShiftSNRScheduler
 
-        self.device, self.dtype, self.num_views = device, torch.float16, 6
+        self.device, self.dtype, self.num_views = device, dtype or torch.float16, 6
         vae = AutoencoderKL.from_pretrained(vae_model, torch_dtype=self.dtype)
         pipe = MVAdapterI2MVSDXLPipeline.from_pretrained(base_model, vae=vae, variant='fp16', torch_dtype=self.dtype)
         pipe.scheduler = ShiftSNRScheduler.from_scheduler(pipe.scheduler, shift_mode='interpolated', shift_scale=8.0,
@@ -66,7 +66,8 @@ class MVTexturer:
         pipe.load_custom_adapter(adapter, weight_name='mvadapter_ig2mv_sdxl.safetensors')
         pipe.to(device=device, dtype=self.dtype)
         pipe.cond_encoder.to(device=device, dtype=self.dtype)
-        pipe.enable_vae_slicing()
+        # diffusers >= 0.41 : le découpage du VAE se règle sur le VAE lui-même
+        (pipe.vae.enable_slicing if hasattr(pipe.vae, 'enable_slicing') else pipe.enable_vae_slicing)()
         self.pipe = pipe
 
         ckpt_dir = ckpt_dir or os.environ.get('MENU_AR_WEIGHTS') or os.path.join(ROOT, 'checkpoints')
