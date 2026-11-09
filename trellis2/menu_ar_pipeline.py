@@ -49,12 +49,14 @@ class MenuARPipeline:
         if segmenter is None:
             from trellis2.utils.dish_segmentation import AutoDishSegmenter
             segmenter = AutoDishSegmenter()
+        self.texturer_error = None
         if hd_texture and texturer is None:
             try:
                 from trellis2.utils.mv_texture import MVTexturer
                 texturer = MVTexturer()
-            except Exception:                    # le site reste utilisable avec la texture photo
+            except Exception as e:               # le site reste utilisable avec la texture photo
                 import traceback; traceback.print_exc()
+                self.texturer_error = f'chargement : {type(e).__name__}: {e}'[:400]
                 print('⚠️ Texture IA indisponible : seule la texture photo sera produite.')
                 texturer = None
         self.trellis = trellis_pipeline
@@ -128,7 +130,7 @@ class MenuARPipeline:
         mark('colors')
 
         # 5. texture haute définition par MV-Adapter (6 vues guidées par la photo et la géométrie)
-        hd_ia, texture_error = None, None
+        hd_ia, texture_error = None, (self.texturer_error if self.texturer is None else None)
         if self.texturer is not None:
             say('texture')
             import torch

@@ -178,6 +178,8 @@ def create_app(run_job: Callable, data_dir: str, access_key: str) -> FastAPI:
             extra += TEXTURE_SWITCH.replace('__ID__', jid)
         r = st.get('result') or {}
         info = f"version {r.get('version', 'ancienne')} · texture {r.get('texture', 'photo')}"
+        if r.get('texture_error'):
+            info += ' · texture IA en échec : ' + r['texture_error'][:160]
         extra += ('<div style="position:fixed;left:8px;bottom:6px;z-index:99;font:11px system-ui;color:#9a9288">'
                   + info.replace('<', '&lt;') + '</div>')
         return html.replace('</body>', extra + '\n</body>')

@@ -21,7 +21,8 @@ def _weights(name: str) -> str:
 
 
 DISH_ITEMS = ['plate', 'bowl', 'sauce cup', 'cup', 'glass', 'takeout box',
-              'cutting board', 'basket', 'food']
+              'cutting board', 'basket', 'food', 'sauce packet', 'condiment sachet']
+CONTAINERS = {'plate', 'bowl', 'takeout box', 'cutting board', 'basket'}
 # Pas de « tray » : le plateau (ou la table) est le support, pas le plat. Un objet détecté qui
 # touche deux bords de la photo ou en couvre plus de 45 % est traité comme support et ignoré.
 
@@ -84,28 +85,59 @@ class AutoDishSegmenter:
         img = image.convert('RGB'); A = np.array(img); H, W = A.shape[:2]
         food = np.array(rembg.remove(img, session=self.session))[..., 3] > 127
         r = self.detector.predict(A, conf=self.conf, verbose=False)[0]
-        items = np.zeros((H, W), bool); found = []
+        # Chaque objet (bol, boîte, sauce, sachet...) et chaque morceau de nourriture est refermé par
+        # sa propre enveloppe convexe : le bord rogné par le détourage est récupéré, mais la table
+        # entre deux objets (ou entre le plat et un sachet posé à côté) n'est pas englobée.
+        parts = []; found = []; extra = []
+        near_food = ndimage.binary_dilation(food, iterations=max(3, int(0.02 * max(H, W))))
         if r.masks is not None:
             for c, poly in zip(r.boxes.cls.tolist(), r.masks.xy):
                 if len(poly) < 3:
                     continue
                 m = Image.new('L', (W, H), 0); ImageDraw.Draw(m).polygon([tuple(p) for p in poly], fill=255)
-                m = np.array(m) > 0
+                m = ndimage.binary_erosion(np.array(m) > 0, iterations=3)     # masques YOLOE un peu gras
                 sides = int(m[0].any()) + int(m[-1].any()) + int(m[:, 0].any()) + int(m[:, -1].any())
-                if sides >= 2 or m.mean() > 0.45:          # plateau, table, planche géante : support
+                if sides >= 3 or m.mean() > 0.45:          # plateau, table, set de table : le support
                     continue
-                items |= ndimage.binary_erosion(m, iterations=3)   # masques YOLOE un peu gras
-                found.append(self.items[int(c)])
-        elements = food | items
-        lab, n = ndimage.label(elements)        # ignore les miettes isolées (< 0,5 % de l'image)
-        if n:
-            sizes = ndimage.sum(elements, lab, range(1, n + 1))
-            elements = np.isin(lab, 1 + np.flatnonzero(sizes >= 0.005 * H * W))
-        if not elements.any():
+                if m.sum() < 0.001 * H * W:
+                    continue
+                name = self.items[int(c)]
+                if name in CONTAINERS and m.mean() > 0.03:
+                    # grand contenant : enveloppe convexe seulement autour de ce que le détourage a vu
+                    # (le masque YOLOE d'une assiette déborde en fines bavures sur le set de table) ;
+                    # les parties épaisses du masque loin de la nourriture (parois d'une boîte) restent.
+                    thick = ndimage.binary_opening(m, iterations=max(2, int(0.01 * max(H, W))))
+                    extra.append(thick & ~near_food)
+                    m &= near_food
+                parts.append(m); found.append(name)
+        n_items = len(parts)
+        lab, n = ndimage.label(food)            # morceaux de nourriture (miettes < 0,5 % ignorées)
+        for k in range(1, n + 1):
+            m = lab == k
+            if m.sum() >= 0.005 * H * W:
+                parts.append(m)
+        if not parts:
             return food, food, found
-        # enveloppe convexe : referme le bord du bol/de la boîte que le détourage aurait rogné,
-        # sans marge autour (une marge ajoutait un liseré de plateau, devenu un socle noir en 3D)
-        hull = ndimage.binary_dilation(convex_hull_image(elements), iterations=1)
+        elements = np.logical_or.reduce(parts)
+        # objet isolé, petit et loin du plat (verre coupé en haut de la photo) : ignoré
+        lab, n = ndimage.label(elements)
+        sizes = ndimage.sum(elements, lab, range(1, n + 1))
+        biggest = lab == 1 + int(np.argmax(sizes))
+        close_by = ndimage.binary_dilation(biggest, iterations=max(3, int(0.05 * max(H, W))))
+        keep_ids = [k + 1 for k in range(n) if sizes[k] >= 0.02 * H * W or (close_by & (lab == k + 1)).any()]
+        main = np.isin(lab, keep_ids)
+        hull = np.zeros((H, W), bool)
+        r_close = max(2, int(0.012 * max(H, W)))
+        for m in parts[:n_items]:                  # objets détectés : enveloppe convexe (bol, boîte, sachet)
+            if (m & main).any():
+                hull |= convex_hull_image(m)
+        for m in parts[n_items:]:                  # nourriture : on referme les trous du détourage sans
+            if (m & main).any():                   # englober la table dans les creux (sachet qui dépasse)
+                big = np.pad(m, r_close)
+                hull |= ndimage.binary_closing(big, iterations=r_close)[r_close:-r_close, r_close:-r_close]
+        for m in extra:
+            hull |= m
+        hull = ndimage.binary_fill_holes(ndimage.binary_dilation(hull, iterations=1))
         hull = _trim_background(A, hull, ndimage.binary_dilation(elements, iterations=2))
         return food, hull, found
 

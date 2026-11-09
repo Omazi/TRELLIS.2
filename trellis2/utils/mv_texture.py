@@ -13,6 +13,7 @@ Seule la texture est récupérée : la géométrie et les UV du maillage d'origi
     tex = MVTexturer()(hd_glb_path, rgba_photo, cam, workdir)   # -> PIL.Image (texture sur nos UV)
 """
 import os
+import shutil
 import sys
 import urllib.request
 from typing import Optional
@@ -73,8 +74,10 @@ class MVTexturer:
         paths = {}
         for name, url in CKPTS.items():
             p = os.path.join(ckpt_dir, name)
-            if not os.path.exists(p):
-                urllib.request.urlretrieve(url, p + '.part'); os.replace(p + '.part', p)
+            if not os.path.exists(p) or os.path.getsize(p) < 1_000_000:
+                tmp = os.path.join('/tmp', name + '.part')      # disque local d'abord (Drive coupe parfois)
+                urllib.request.urlretrieve(url, tmp)
+                shutil.copyfile(tmp, p + '.part'); os.replace(p + '.part', p); os.remove(tmp)
             paths[name] = p
         self.texture_pipe = TexturePipeline(upscaler_ckpt_path=paths['RealESRGAN_x2plus.pth'],
                                             inpaint_ckpt_path=paths['big-lama.pt'], device=device)

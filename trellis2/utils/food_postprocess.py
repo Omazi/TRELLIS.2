@@ -40,10 +40,27 @@ def solidify_base(vertices, faces, up_axis=1, start=-0.15, full=-0.55, smooth_it
 
 
 
-def paint_underside(texture, V, F, UV, weights=None, color=(46, 40, 34), up_axis=1, threshold=-0.7, grow=3):
-    """Peint d'une couleur unie (carton/assiette sombre) le dessous plat du modèle, pour qu'il
-    ne montre plus la nourriture « en transparence » vu d'en bas. Retourne une nouvelle image PIL.
-    weights : poids optionnels par sommet (ex. ceux de solidify_base) ; sinon d'après les normales."""
+def underside_color(tex: np.ndarray, V, F, UV, up_axis=1, band=0.12, shade=0.95):
+    """Couleur du dessous = celle du bas des flancs (bord de la planche, du bol, de la boîte),
+    un peu assombrie comme à l'ombre. Le dessous n'est jamais vu sur la photo : on prolonge
+    simplement le matériau visible juste au-dessus, au lieu d'un noir uniforme."""
+    fn = np.cross(V[F[:, 1]] - V[F[:, 0]], V[F[:, 2]] - V[F[:, 0]])
+    fn /= np.linalg.norm(fn, axis=1, keepdims=True) + 1e-12
+    y = V[:, up_axis]; y0, y1 = y.min(), y.max()
+    side = np.abs(fn[:, up_axis]) < 0.35
+    low = y[F].mean(1) < y0 + band * (y1 - y0)
+    vid = np.unique(F[side & low])
+    if len(vid) < 20:
+        return None
+    T = tex.shape[0]; uv = np.asarray(UV)[vid]
+    c = tex[np.clip(((1 - uv[:, 1]) * (T - 1)).astype(int), 0, T - 1), np.clip((uv[:, 0] * (T - 1)).astype(int), 0, T - 1)]
+    return tuple(np.median(c, axis=0) * shade)
+
+
+def paint_underside(texture, V, F, UV, weights=None, color=None, up_axis=1, threshold=-0.7, grow=3):
+    """Peint le dessous plat du modèle, pour qu'il ne montre plus la nourriture « en transparence »
+    vu d'en bas. color=None : couleur du bas des flancs (bois de la planche, céramique du bol...).
+    Retourne une nouvelle image PIL."""
     from PIL import Image
     from scipy.ndimage import distance_transform_edt
     from .photo_projection import _texel_positions, vertex_normals
@@ -53,6 +70,8 @@ def paint_underside(texture, V, F, UV, weights=None, color=(46, 40, 34), up_axis
     down = (fn[:, up_axis] < threshold).astype(np.float32)         # faces tournées vers le sol
     w = np.zeros(len(V), np.float32); np.maximum.at(w, F.ravel(), np.repeat(down, 3))
     tex = np.asarray(texture.convert('RGB'), np.float32); T = tex.shape[0]
+    if color is None:
+        color = underside_color(tex, V, F, UV, up_axis=up_axis) or (46, 40, 34)
     _, wt, used = _texel_positions(V, F, np.asarray(UV), np.repeat(w[:, None], 3, 1), T)
     idx = distance_transform_edt(~used, return_distances=False, return_indices=True)
     a = wt[idx[0], idx[1], :1]

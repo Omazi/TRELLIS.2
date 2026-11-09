@@ -26,11 +26,13 @@ if (AO > 0) {
     let ymin = Infinity, ymax = -Infinity;
     for (let i = 0; i < n; i++) { pos.getElement(i, p); ymin = Math.min(ymin, p[1]); ymax = Math.max(ymax, p[1]); }
     const H = ymax - ymin, col = new Float32Array(n * 3);
+    const nor = prim.getAttribute('NORMAL'); const q = [0, 0, 0];
     for (let i = 0; i < n; i++) {
       pos.getElement(i, p);
       let t = Math.min(1, Math.max(0, (p[1] - ymin) / (AO * H)));
       t = t * t * (3 - 2 * t);                    // smoothstep
-      const k = 0.38 + 0.62 * t;                  // 38 % de luminosité au contact de la table
+      let k = 0.45 + 0.55 * t;                    // 45 % de luminosité au contact de la table
+      if (nor) { nor.getElement(i, q); if (q[1] < -0.5) k = 0.9; }   // dessous : pas d'ombre de contact
       col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = k;
     }
     prim.setAttribute('COLOR_0', doc.createAccessor().setType('VEC3').setArray(col).setBuffer(pos.getBuffer()));
