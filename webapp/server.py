@@ -94,7 +94,7 @@ def create_app(run_job: Callable, data_dir: str, access_key: str) -> FastAPI:
                 res = run_job(img, workdir=job_dir(jid), mode=st['mode'], size_m=st['size_m'],
                               progress=lambda step: write_state(jid, step=step))
                 write_state(jid, step='done', finished=time.time(), result={
-                    k: v for k, v in res.items() if k in ('camera', 'seconds', 'size_mb', 'texture', 'texture_error', 'version', 'objets')})
+                    k: v for k, v in res.items() if k in ('camera', 'seconds', 'size_mb', 'texture', 'texture_error', 'version', 'objets', 'collage')})
             except Exception as e:                       # l'erreur est affichée sur la page
                 traceback.print_exc()
                 write_state(jid, step='error', error=f'{type(e).__name__}: {e}'[:600], finished=time.time())

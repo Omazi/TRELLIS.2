@@ -76,7 +76,7 @@ class MenuARPipeline:
         import o_voxel
         import trimesh
         from trellis2.utils.food_postprocess import solidify_base, paint_underside
-        from trellis2.utils.photo_projection import estimate_camera, recolor_from_photo
+        from trellis2.utils.photo_projection import estimate_camera, recolor_from_photo, paste_photo
 
         os.makedirs(workdir, exist_ok=True)
         say = progress or (lambda step: None)
@@ -123,6 +123,7 @@ class MenuARPipeline:
         vcol = tex[np.clip(((1 - UV[:, 1]) * (T - 1)).astype(int), 0, T - 1), np.clip((UV[:, 0] * (T - 1)).astype(int), 0, T - 1)]
         cam = estimate_camera(V, F, P[..., 3] > 127, vertex_colors=vcol, photo_rgb=P[..., :3] / 255.)
         new_tex, stats = recolor_from_photo(base, V, F, UV, rgba, cam)
+        new_tex, paste_stats = paste_photo(new_tex, V, F, UV, rgba, cam)   # la vraie photo sur le dessus
         new_tex = paint_underside(new_tex, V, F, UV)
         tex_path = os.path.join(workdir, 'texture_photo.png'); new_tex.save(tex_path)
         hd_photo = os.path.join(workdir, 'plat_hd_photo.glb')
@@ -137,7 +138,8 @@ class MenuARPipeline:
             torch.cuda.empty_cache()
             try:
                 ia = self.texturer(hd, rgba, cam, workdir)
-                ia = paint_underside(ia, V, F, UV)          # même fond uni que la version photo
+                ia, _ = paste_photo(ia, V, F, UV, rgba, cam)   # l'IA complète, la photo reste la photo
+                ia = paint_underside(ia, V, F, UV)          # même dessous que la version photo
                 ia_path = os.path.join(workdir, 'texture_ia.png'); ia.save(ia_path)
                 out_path = os.path.join(workdir, 'plat_hd_ia.glb')
                 self._node('retexture.mjs', hd, ia_path, out_path)
@@ -165,4 +167,5 @@ class MenuARPipeline:
                     texture_error=texture_error, version=CODE_VERSION,
                     objets=list(getattr(self.segmenter, 'last_found', []) or []),
                     camera=dict(az=cam['az'], el=cam['el'], roll=cam['roll'], iou=cam['iou']),
+                    collage=dict(part=round(paste_stats['from_photo'], 3), recalage=paste_stats['shift']),
                     seconds=timings, size_mb=round(os.path.getsize(mobile) / 1e6, 2))

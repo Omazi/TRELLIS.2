@@ -6,8 +6,9 @@ TRELLIS 2 réinvente toute la texture : les couleurs dérivent (ex. pâte dorée
 2. recolor_from_photo : garde les détails de la texture générée (alignés sur la géométrie)
    mais recale la couleur de chaque zone sur la photo floutée ; les zones cachées héritent
    de la correction des zones voisines. Tolérant aux petits écarts de forme.
-project_photo (plaquage direct des pixels) est conservé pour expérimentation : il donne des
-dédoublements quand la forme générée diffère de la photo.
+3. paste_photo : la vraie photo sur les parties qu'elle montre (dessus du plat), recalée sur les
+   contours du modèle par flot optique ; la texture (IA ou recalée) garde les flancs et le reste.
+project_photo (ancien plaquage direct, sans recalage) est conservé pour comparaison.
 Tout tourne sur CPU (numpy/scipy).
 """
 import numpy as np
@@ -126,8 +127,68 @@ def estimate_camera(V, F, mask, max_faces=20000, work=128, verbose=False, vertex
 
 
 # ---------------------------------------------------------------- texture
+_BARY_CACHE = {}
+
+
+def _texel_bary(F, UV, T):
+    """Rasterisation des triangles dans l'espace UV (vectorisée, mise en cache) : pour chaque texel,
+    le triangle qui le couvre et ses coordonnées barycentriques. Même résultat que l'ancienne boucle
+    triangle par triangle, ~100x plus rapide (la texture fait 4096², le maillage ~300 000 faces)."""
+    import hashlib
+    key = (T, hashlib.sha1(np.ascontiguousarray(F).tobytes() + np.ascontiguousarray(UV, np.float32).tobytes()).hexdigest())
+    if key in _BARY_CACHE:
+        return _BARY_CACHE[key]
+    P = UV * (T - 1); P = np.stack([P[:, 0], (T - 1) - P[:, 1]], 1).astype(np.float64)
+    A, B, C = P[F[:, 0]], P[F[:, 1]], P[F[:, 2]]
+    lo = np.floor(np.minimum(np.minimum(A, B), C)).astype(np.int64)
+    hi = np.ceil(np.maximum(np.maximum(A, B), C)).astype(np.int64)
+    lo = np.maximum(lo, 0); hi = np.minimum(hi, T - 1)
+    den = (B[:, 1] - C[:, 1]) * (A[:, 0] - C[:, 0]) + (C[:, 0] - B[:, 0]) * (A[:, 1] - C[:, 1])
+    ok = (hi >= lo).all(1) & (np.abs(den) > 1e-12)
+    span = (hi - lo + 1).max(1)
+    face = np.full((T, T), -1, np.int64); bary = np.zeros((T, T, 3), np.float32)
+    done = np.zeros(len(F), bool)
+    for k in (2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192):
+        sel = np.flatnonzero(ok & ~done & (span <= k))
+        done[sel] = True
+        if not len(sel):
+            continue
+        g = np.arange(k)
+        chunk = max(1, 4_000_000 // (k * k))
+        for c0 in range(0, len(sel), chunk):
+            f = sel[c0:c0 + chunk]
+            shape = (len(f), k, k)
+            xs = np.broadcast_to(lo[f, 0][:, None, None] + g[None, None, :], shape)
+            ys = np.broadcast_to(lo[f, 1][:, None, None] + g[None, :, None], shape)
+            inb = (xs <= hi[f, 0][:, None, None]) & (ys <= hi[f, 1][:, None, None])
+            px, py = xs + 0.5, ys + 0.5
+            a, b, c, d = A[f][:, None, None], B[f][:, None, None], C[f][:, None, None], den[f][:, None, None]
+            w0 = ((b[..., 1] - c[..., 1]) * (px - c[..., 0]) + (c[..., 0] - b[..., 0]) * (py - c[..., 1])) / d
+            w1 = ((c[..., 1] - a[..., 1]) * (px - c[..., 0]) + (a[..., 0] - c[..., 0]) * (py - c[..., 1])) / d
+            w2 = 1 - w0 - w1
+            m = inb & (w0 >= -1e-3) & (w1 >= -1e-3) & (w2 >= -1e-3)
+            fi, yi, xi = np.nonzero(m)
+            yy, xx = ys[fi, yi, xi], xs[fi, yi, xi]
+            face[yy, xx] = f[fi]            # en cas de recouvrement : le dernier triangle gagne (comme avant)
+            bary[yy, xx] = np.stack([w0[m], w1[m], w2[m]], 1)
+    used = face >= 0
+    _BARY_CACHE.clear(); _BARY_CACHE[key] = (face, bary, used)
+    return face, bary, used
+
+
 def _texel_positions(V, F, UV, N, T):
     """Pour chaque texel : position 3D et normale interpolées (rasterisation dans l'espace UV)."""
+    face, bary, used = _texel_bary(np.asarray(F), np.asarray(UV), T)
+    pos = np.zeros((T, T, 3), np.float32); nrm = np.zeros((T, T, 3), np.float32)
+    fu, bu = face[used], bary[used]
+    tri = np.asarray(F)[fu]
+    pos[used] = np.einsum('nk,nkd->nd', bu, np.asarray(V, np.float32)[tri])
+    nrm[used] = np.einsum('nk,nkd->nd', bu, np.asarray(N, np.float32)[tri])
+    return pos, nrm, used
+
+
+def _texel_positions_loop(V, F, UV, N, T):
+    """Ancienne version (référence pour les tests)."""
     pos = np.zeros((T, T, 3), np.float32); nrm = np.zeros((T, T, 3), np.float32); used = np.zeros((T, T), bool)
     P = UV * (T - 1); P = np.stack([P[:, 0], (T - 1) - P[:, 1]], 1)
     for f in F:
@@ -186,6 +247,87 @@ def project_photo(texture, V, F, UV, N, photo_rgba, cam, min_facing=0.15, full_f
     out_col = w[:, None] * photo_col + (1 - w[:, None]) * gen_col
     new = tex.copy(); new[used] = out_col
     stats = dict(texels=int(used.sum()), from_photo=float((w > 0.5).mean()))
+    return Image.fromarray((np.clip(new, 0, 1) * 255).round().astype(np.uint8)), stats
+
+
+def _render_texels(x, y, z, col, keep, size):
+    """Image de la texture vue depuis la caméra de la photo (texels projetés, le plus proche gagne)."""
+    W, H = size
+    ix, iy = np.clip(x.astype(int), 0, W - 1), np.clip(y.astype(int), 0, H - 1)
+    ins = keep & (x >= 0) & (x < W) & (y >= 0) & (y < H)
+    zb = np.full((H, W), np.inf, np.float32); np.minimum.at(zb, (iy[ins], ix[ins]), z[ins])
+    front = ins & (z <= zb[iy, ix] + 1e-6)
+    img = np.zeros((H, W, 3), np.float32); cnt = np.zeros((H, W), np.float32)
+    np.add.at(img, (iy[front], ix[front]), col[front]); np.add.at(cnt, (iy[front], ix[front]), 1)
+    filled = cnt > 0
+    img[filled] /= cnt[filled][:, None]
+    return img, filled
+
+
+def _photo_flow(render, rmask, photo, pmask, max_shift=0.06):
+    """Flot dense rendu -> photo : de combien décaler chaque point du rendu du modèle pour tomber sur
+    le même endroit de la photo. Calculé sur les contours (distance signée au bord du plat) : la
+    texture générée invente souvent d'autres garnitures que la photo, ses détails ne servent donc
+    pas de repères ; les bords (croûte, planche, bol, sachet) si. Lissé et borné : un recalage,
+    pas une déformation."""
+    import cv2
+    from scipy.ndimage import distance_transform_edt
+    H, W = rmask.shape
+    def sdf(m):
+        d = distance_transform_edt(m) - distance_transform_edt(~m)
+        return np.clip(128 + 4 * d, 0, 255).astype(np.uint8)
+    dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM)
+    flow = dis.calc(sdf(rmask), sdf(pmask), None)
+    sig = 0.02 * max(H, W)
+    flow = np.stack([cv2.GaussianBlur(flow[..., k], (0, 0), sig) for k in range(2)], -1)
+    mag = np.linalg.norm(flow, axis=2, keepdims=True); lim = max_shift * max(H, W)
+    return flow * np.minimum(1, lim / np.maximum(mag, 1e-6))
+
+
+def paste_photo(texture, V, F, UV, photo_rgba, cam, min_facing=0.55, full_facing=0.75, edge_erode=4,
+                align=True, work=768):
+    """La photo elle-même sur les parties du plat qu'elle montre ; la texture (IA ou recalée) partout
+    ailleurs. Avant de plaquer, la photo est recalée sur le rendu du modèle par flot optique : sans
+    ce recalage, une forme générée un peu différente du vrai plat donnait des détails dédoublés.
+    Retourne (image PIL, stats)."""
+    import cv2
+    tex = np.asarray(texture.convert('RGB'), np.float32) / 255; T = tex.shape[0]
+    ph = np.asarray(photo_rgba.convert('RGBA'), np.float32) / 255; H, W = ph.shape[:2]
+    alpha = cv2.erode(ph[..., 3], np.ones((2 * edge_erode + 1,) * 2, np.uint8))
+    V = np.asarray(V, np.float64); F = np.asarray(F)
+    N = vertex_normals(V, F)
+    pos, nrm, used = _texel_positions(V, F, UV, N, T)
+    P = pos[used] - cam['center']; Nn = nrm[used]; Nn /= np.linalg.norm(Nn, axis=1, keepdims=True) + 1e-9
+    x, y, z = _project(P, cam['R']); s, tx, ty = cam['fit']; x = x * s + tx; y = y * s + ty
+    inside = (x >= 0) & (x < W - 1) & (y >= 0) & (y < H - 1)
+    ix, iy = np.clip(x.astype(int), 0, W - 1), np.clip(y.astype(int), 0, H - 1)
+    zbuf = np.full((H, W), np.inf, np.float32); np.minimum.at(zbuf, (iy[inside], ix[inside]), z[inside])
+    zbuf = minimum_filter(zbuf, size=3)
+    tol = 0.004 * np.ptp(V, axis=0).max()
+    visible = inside & (z <= zbuf[iy, ix] + tol)
+    facing = -(Nn @ cam['R'][2])
+    gen = tex[used]
+    fx = fy = 0.0; shift = 0.0
+    if align:
+        k = work / max(H, W); size = (max(16, int(W * k)), max(16, int(H * k)))
+        rimg, rmask = _render_texels(x * k, y * k, z, gen, visible & (facing > 0.05), size)
+        rimg = cv2.inpaint((rimg * 255).astype(np.uint8), (~rmask & cv2.dilate(rmask.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)).astype(np.uint8), 3, cv2.INPAINT_TELEA).astype(np.float32) / 255
+        rmask = cv2.dilate(rmask.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+        small = cv2.resize(ph, size, interpolation=cv2.INTER_AREA)
+        flow = _photo_flow(rimg, rmask, small[..., :3], small[..., 3] > 0.5)
+        f = _bilinear(flow, x * k, y * k) / k
+        fx, fy = f[:, 0], f[:, 1]
+        shift = float(np.median(np.hypot(fx, fy)[visible]) / max(H, W)) if visible.any() else 0.0
+    photo_col = _bilinear(ph[..., :3], x + fx, y + fy)
+    a = _bilinear(alpha[..., None], x + fx, y + fy)[:, 0]
+    t = np.clip((facing - min_facing) / (full_facing - min_facing), 0, 1)
+    w = (t * t * (3 - 2 * t)) * visible * a
+    # pas de recalage global des couleurs ici : la texture reçue est déjà accordée à la photo
+    # (recolor_from_photo, ou MV-Adapter guidé par la photo) ; une correction affine globale
+    # délavait les flancs et la planche.
+    out = w[:, None] * photo_col + (1 - w[:, None]) * gen
+    new = tex.copy(); new[used] = out
+    stats = dict(from_photo=float((w > 0.5).mean()), shift=round(shift, 4))
     return Image.fromarray((np.clip(new, 0, 1) * 255).round().astype(np.uint8)), stats
 
 
