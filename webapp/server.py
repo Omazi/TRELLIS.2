@@ -16,7 +16,7 @@ import threading
 import time
 import traceback
 import uuid
-from typing import Callable
+from typing import Callable, List
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -55,6 +55,9 @@ TEXTURE_SWITCH = '''
 </script>'''
 
 
+MAX_PHOTOS = 6
+
+
 def create_app(run_job: Callable, data_dir: str, access_key: str) -> FastAPI:
     os.makedirs(data_dir, exist_ok=True)
     app = FastAPI(title='Menu AR')
@@ -84,17 +87,22 @@ def create_app(run_job: Callable, data_dir: str, access_key: str) -> FastAPI:
         os.replace(p + '.tmp', p)
         return st
 
+    def upload_files(jid):
+        names = [f for f in os.listdir(job_dir(jid)) if f.startswith('upload') and f.endswith('.jpg')]
+        return sorted(names, key=lambda f: 1 if f == 'upload.jpg' else int(f[7:-4]))
+
     def worker():
         while True:
             jid = jobs_q.get()
             st = read_state(jid)
             write_state(jid, step='segmentation', started=time.time())
             try:
-                img = Image.open(os.path.join(job_dir(jid), 'upload.jpg'))
-                res = run_job(img, workdir=job_dir(jid), mode=st['mode'], size_m=st['size_m'],
+                imgs = [Image.open(os.path.join(job_dir(jid), f)) for f in upload_files(jid)]
+                res = run_job(imgs if len(imgs) > 1 else imgs[0], workdir=job_dir(jid), mode=st['mode'], size_m=st['size_m'],
                               progress=lambda step: write_state(jid, step=step))
                 write_state(jid, step='done', finished=time.time(), result={
-                    k: v for k, v in res.items() if k in ('camera', 'seconds', 'size_mb', 'texture', 'texture_error', 'version', 'objets', 'collage')})
+                    k: v for k, v in res.items() if k in ('camera', 'seconds', 'size_mb', 'texture', 'texture_error', 'version', 'objets', 'collage',
+                                                   'photos', 'cameras')})
             except Exception as e:                       # l'erreur est affichée sur la page
                 traceback.print_exc()
                 write_state(jid, step='error', error=f'{type(e).__name__}: {e}'[:600], finished=time.time())
@@ -120,18 +128,24 @@ def create_app(run_job: Callable, data_dir: str, access_key: str) -> FastAPI:
         return resp
 
     @app.post('/api/jobs')
-    async def create_job(request: Request, photo: UploadFile = File(...), name: str = Form('Mon plat'),
+    async def create_job(request: Request, photo: List[UploadFile] = File(...), name: str = Form('Mon plat'),
                          mode: str = Form('tout'), size_cm: float = Form(30)):
+        """Une ou plusieurs photos du même plat (6 au plus) ; la première est la photo principale."""
         check(request)
-        data = await photo.read()
-        try:
-            img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert('RGB')
-        except Exception:
-            raise HTTPException(400, 'Image illisible')
+        imgs = []
+        for up in photo[:MAX_PHOTOS]:
+            try:
+                imgs.append(ImageOps.exif_transpose(Image.open(io.BytesIO(await up.read()))).convert('RGB'))
+            except Exception:
+                raise HTTPException(400, f'Image illisible : {up.filename}')
+        if not imgs:
+            raise HTTPException(400, 'Aucune photo')
         jid = uuid.uuid4().hex[:10]
         os.makedirs(job_dir(jid))
-        img.thumbnail((2048, 2048)); img.save(os.path.join(job_dir(jid), 'upload.jpg'), quality=92)
-        write_state(jid, id=jid, name=(name or 'Mon plat')[:60], mode='plat' if mode == 'plat' else 'tout',
+        for k, img in enumerate(imgs):
+            img.thumbnail((2048, 2048))
+            img.save(os.path.join(job_dir(jid), 'upload.jpg' if k == 0 else f'upload_{k + 1}.jpg'), quality=92)
+        write_state(jid, id=jid, name=(name or 'Mon plat')[:60], mode='plat' if mode == 'plat' else 'tout', photos=len(imgs),
                     size_m=max(0.05, min(1.0, size_cm / 100)), step='queued', created=time.time())
         jobs_q.put(jid)
         return {'id': jid}

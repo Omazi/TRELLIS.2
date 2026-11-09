@@ -284,20 +284,12 @@ def _photo_flow(render, rmask, photo, pmask, max_shift=0.06):
     return flow * np.minimum(1, lim / np.maximum(mag, 1e-6))
 
 
-def paste_photo(texture, V, F, UV, photo_rgba, cam, min_facing=0.55, full_facing=0.75, edge_erode=4,
-                align=True, work=768):
-    """La photo elle-même sur les parties du plat qu'elle montre ; la texture (IA ou recalée) partout
-    ailleurs. Avant de plaquer, la photo est recalée sur le rendu du modèle par flot optique : sans
-    ce recalage, une forme générée un peu différente du vrai plat donnait des détails dédoublés.
-    Retourne (image PIL, stats)."""
+def _photo_layer(tex_used, pos_used, nrm_used, V, photo_rgba, cam, min_facing, full_facing, edge_erode, align, work):
+    """Couleur que la photo donne à chaque texel, et son poids (0 = la photo ne le voit pas)."""
     import cv2
-    tex = np.asarray(texture.convert('RGB'), np.float32) / 255; T = tex.shape[0]
     ph = np.asarray(photo_rgba.convert('RGBA'), np.float32) / 255; H, W = ph.shape[:2]
     alpha = cv2.erode(ph[..., 3], np.ones((2 * edge_erode + 1,) * 2, np.uint8))
-    V = np.asarray(V, np.float64); F = np.asarray(F)
-    N = vertex_normals(V, F)
-    pos, nrm, used = _texel_positions(V, F, UV, N, T)
-    P = pos[used] - cam['center']; Nn = nrm[used]; Nn /= np.linalg.norm(Nn, axis=1, keepdims=True) + 1e-9
+    P = pos_used - cam['center']; Nn = nrm_used / (np.linalg.norm(nrm_used, axis=1, keepdims=True) + 1e-9)
     x, y, z = _project(P, cam['R']); s, tx, ty = cam['fit']; x = x * s + tx; y = y * s + ty
     inside = (x >= 0) & (x < W - 1) & (y >= 0) & (y < H - 1)
     ix, iy = np.clip(x.astype(int), 0, W - 1), np.clip(y.astype(int), 0, H - 1)
@@ -306,28 +298,54 @@ def paste_photo(texture, V, F, UV, photo_rgba, cam, min_facing=0.55, full_facing
     tol = 0.004 * np.ptp(V, axis=0).max()
     visible = inside & (z <= zbuf[iy, ix] + tol)
     facing = -(Nn @ cam['R'][2])
-    gen = tex[used]
     fx = fy = 0.0; shift = 0.0
     if align:
         k = work / max(H, W); size = (max(16, int(W * k)), max(16, int(H * k)))
-        rimg, rmask = _render_texels(x * k, y * k, z, gen, visible & (facing > 0.05), size)
-        rimg = cv2.inpaint((rimg * 255).astype(np.uint8), (~rmask & cv2.dilate(rmask.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)).astype(np.uint8), 3, cv2.INPAINT_TELEA).astype(np.float32) / 255
+        rimg, rmask = _render_texels(x * k, y * k, z, tex_used, visible & (facing > 0.05), size)
+        ring = ~rmask & cv2.dilate(rmask.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+        rimg = cv2.inpaint((rimg * 255).astype(np.uint8), ring.astype(np.uint8), 3, cv2.INPAINT_TELEA).astype(np.float32) / 255
         rmask = cv2.dilate(rmask.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
         small = cv2.resize(ph, size, interpolation=cv2.INTER_AREA)
         flow = _photo_flow(rimg, rmask, small[..., :3], small[..., 3] > 0.5)
         f = _bilinear(flow, x * k, y * k) / k
         fx, fy = f[:, 0], f[:, 1]
         shift = float(np.median(np.hypot(fx, fy)[visible]) / max(H, W)) if visible.any() else 0.0
-    photo_col = _bilinear(ph[..., :3], x + fx, y + fy)
+    col = _bilinear(ph[..., :3], x + fx, y + fy)
     a = _bilinear(alpha[..., None], x + fx, y + fy)[:, 0]
     t = np.clip((facing - min_facing) / (full_facing - min_facing), 0, 1)
     w = (t * t * (3 - 2 * t)) * visible * a
+    return col, w, shift
+
+
+def paste_photo(texture, V, F, UV, photo_rgba, cam, min_facing=0.55, full_facing=0.75, edge_erode=4,
+                align=True, work=768, sharpness=4):
+    """La photo elle-même sur les parties du plat qu'elle montre ; la texture (IA ou recalée) partout
+    ailleurs. Avant de plaquer, la photo est recalée sur le rendu du modèle par flot optique : sans
+    ce recalage, une forme générée un peu différente du vrai plat donnait des détails dédoublés.
+    Plusieurs photos : photo_rgba et cam sont des listes ; chaque texel prend surtout la photo qui le
+    voit le plus de face (poids ** sharpness : pas de mélange flou entre deux photos).
+    Retourne (image PIL, stats)."""
+    photos = photo_rgba if isinstance(photo_rgba, (list, tuple)) else [photo_rgba]
+    cams = cam if isinstance(cam, (list, tuple)) else [cam]
+    tex = np.asarray(texture.convert('RGB'), np.float32) / 255; T = tex.shape[0]
+    V = np.asarray(V, np.float64); F = np.asarray(F)
+    N = vertex_normals(V, F)
+    pos, nrm, used = _texel_positions(V, F, UV, N, T)
+    gen = tex[used]
+    num = np.zeros_like(gen); den = np.zeros(len(gen), np.float32); wmax = np.zeros(len(gen), np.float32)
+    shifts = []
+    for ph, c in zip(photos, cams):
+        col, w, shift = _photo_layer(gen, pos[used], nrm[used], V, ph, c, min_facing, full_facing,
+                                     edge_erode, align, work)
+        a = w ** sharpness
+        num += a[:, None] * col; den += a; wmax = np.maximum(wmax, w); shifts.append(round(shift, 4))
+    photo_col = num / np.maximum(den, 1e-12)[:, None]
     # pas de recalage global des couleurs ici : la texture reçue est déjà accordée à la photo
     # (recolor_from_photo, ou MV-Adapter guidé par la photo) ; une correction affine globale
     # délavait les flancs et la planche.
-    out = w[:, None] * photo_col + (1 - w[:, None]) * gen
+    out = wmax[:, None] * photo_col + (1 - wmax[:, None]) * gen
     new = tex.copy(); new[used] = out
-    stats = dict(from_photo=float((w > 0.5).mean()), shift=round(shift, 4))
+    stats = dict(from_photo=float((wmax > 0.5).mean()), shift=shifts[0] if len(shifts) == 1 else shifts)
     return Image.fromarray((np.clip(new, 0, 1) * 255).round().astype(np.uint8)), stats
 
 

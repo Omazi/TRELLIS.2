@@ -18,6 +18,12 @@
   .pick label:active { background:#faf6f0; }
   .pick svg { width:26px; height:26px; color:var(--accent); }
   .pick input { display:none; }
+  .shots { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0 4px; }
+  .shots:empty { display:none; }
+  .shot { position:relative; width:76px; height:76px; border-radius:10px; overflow:hidden; border:1px solid var(--line); }
+  .shot img { width:100%; height:100%; object-fit:cover; display:block; }
+  .shot b { position:absolute; left:0; right:0; bottom:0; font:600 10px system-ui; color:#fff; background:rgba(0,0,0,.55); text-align:center; padding:2px 0; }
+  .shot button { position:absolute; top:3px; right:3px; width:22px; height:22px; border-radius:50%; border:0; background:rgba(0,0,0,.6); color:#fff; font-size:15px; line-height:22px; padding:0; cursor:pointer; }
   .preview { display:none; margin-top:12px; border-radius:12px; width:100%; max-height:360px; object-fit:cover; }
   .field { margin-top:14px; }
   .field > span { display:block; font-size:13px; color:var(--muted); margin-bottom:6px; }
@@ -46,9 +52,10 @@
       <label><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
         Prendre une photo<input type="file" accept="image/*" capture="environment" id="cam"></label>
       <label><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="m21 16-5-5-9 9"/></svg>
-        Choisir une photo<input type="file" accept="image/*" id="gal"></label>
+        Choisir des photos<input type="file" accept="image/*" id="gal" multiple></label>
     </div>
-    <img class="preview" id="preview" alt="">
+    <div class="shots" id="shots"></div>
+    <p class="hint" id="shotsHint">Une photo suffit. Avec 3 ou 4 photos du même plat (de face, de côté, de dessus), les côtés et le dessous sont réels au lieu d’être imaginés.</p>
 
     <div class="field"><span>Nom du plat</span><input type="text" id="name" placeholder="ex. Wrap gratiné & frites" maxlength="60"></div>
 
@@ -64,30 +71,39 @@
 
     <button class="go" id="go" disabled>Générer en 3D</button>
     <p class="err" id="err"></p>
-    <p class="tips">Pour un meilleur résultat : tout le plat dans le cadre (avec un peu de table autour), photo prise de biais vers 30–45°, bonne lumière.</p>
+    <p class="tips">Pour un meilleur résultat : tout le plat dans le cadre (avec un peu de table autour), photo principale prise de biais vers 30–45°, bonne lumière. Plusieurs photos : même plat, sans le déplacer, en tournant autour.</p>
   </form>
 
   <h2 id="histT" style="display:none">Plats déjà générés</h2>
   <div class="list" id="hist"></div>
 </main>
 <script>
-  let file = null, mode = 'tout';
-  const preview = document.getElementById('preview'), go = document.getElementById('go'), err = document.getElementById('err');
-  function setFile(f) {
-    if (!f) return;
-    file = f; preview.src = URL.createObjectURL(f); preview.style.display = 'block'; go.disabled = false; err.textContent = '';
+  const MAX = 6;
+  let files = [], mode = 'tout';
+  const shots = document.getElementById('shots'), go = document.getElementById('go'), err = document.getElementById('err');
+  function draw() {
+    shots.innerHTML = files.map((f, i) => `<div class="shot"><img src="${URL.createObjectURL(f)}" alt="">` +
+      `${i === 0 ? '<b>principale</b>' : ''}<button type="button" data-i="${i}" aria-label="Retirer">×</button></div>`).join('');
+    shots.querySelectorAll('button').forEach(b => b.onclick = () => { files.splice(+b.dataset.i, 1); draw(); });
+    go.disabled = !files.length;
+    go.textContent = files.length > 1 ? `Générer en 3D (${files.length} photos)` : 'Générer en 3D';
   }
-  document.getElementById('cam').onchange = e => setFile(e.target.files[0]);
-  document.getElementById('gal').onchange = e => setFile(e.target.files[0]);
+  function addFiles(list) {
+    files = files.concat([...list]).slice(0, MAX); err.textContent = '';
+    if (list.length && files.length === MAX) err.textContent = `${MAX} photos au maximum.`;
+    draw();
+  }
+  document.getElementById('cam').onchange = e => { addFiles(e.target.files); e.target.value = ''; };
+  document.getElementById('gal').onchange = e => { addFiles(e.target.files); e.target.value = ''; };
   document.querySelectorAll('#mode button').forEach(b => b.onclick = () => {
     document.querySelectorAll('#mode button').forEach(x => x.classList.toggle('on', x === b)); mode = b.dataset.v;
   });
   document.getElementById('form').onsubmit = async e => {
     e.preventDefault();
-    if (!file) return;
-    go.disabled = true; go.textContent = 'Envoi de la photo…'; err.textContent = '';
+    if (!files.length) return;
+    go.disabled = true; go.textContent = files.length > 1 ? 'Envoi des photos…' : 'Envoi de la photo…'; err.textContent = '';
     const fd = new FormData();
-    fd.append('photo', file); fd.append('name', document.getElementById('name').value || 'Mon plat');
+    files.forEach(f => fd.append('photo', f)); fd.append('name', document.getElementById('name').value || 'Mon plat');
     fd.append('mode', mode); fd.append('size_cm', document.getElementById('size').value || '30');
     try {
       const r = await fetch('/api/jobs', { method: 'POST', body: fd });

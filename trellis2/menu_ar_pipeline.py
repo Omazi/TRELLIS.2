@@ -70,7 +70,7 @@ class MenuARPipeline:
             raise RuntimeError(f'{script} : {r.stderr[-800:]}')
         return r.stdout
 
-    def run(self, image: Image.Image, workdir: str, mode: str = 'tout', size_m: float = 0.30,
+    def run(self, image, workdir: str, mode: str = 'tout', size_m: float = 0.30,
             pipeline_type: str = '1536_cascade', seed: int = 42,
             progress: Optional[Callable[[str], None]] = None) -> dict:
         import o_voxel
@@ -86,17 +86,22 @@ class MenuARPipeline:
         def mark(step):
             timings[step] = round(time.time() - t0, 1)
 
-        # 1. détourage
+        # 1. détourage (une ou plusieurs photos du même plat ; la première est la photo principale)
         say('segmentation')
-        img = image.convert('RGB'); img.thumbnail((1536, 1536))
-        img.save(os.path.join(workdir, 'photo.jpg'), quality=88)
-        rgba = self.segmenter(img, keep_container=(mode != 'plat'))
-        rgba_path = os.path.join(workdir, 'input_rgba.png'); rgba.save(rgba_path)
+        images = list(image) if isinstance(image, (list, tuple)) else [image]
+        rgbas = []
+        for k, im in enumerate(images):
+            img = im.convert('RGB'); img.thumbnail((1536, 1536))
+            suffix = '' if k == 0 else f'_{k + 1}'
+            img.save(os.path.join(workdir, f'photo{suffix}.jpg'), quality=88)
+            r = self.segmenter(img, keep_container=(mode != 'plat'))
+            r.save(os.path.join(workdir, f'input_rgba{suffix}.png')); rgbas.append(r)
+        rgba = rgbas[0]
         mark('segmentation')
 
-        # 2. génération
+        # 2. génération (plusieurs photos : chaque pas de diffusion tient compte de toutes)
         say('generation')
-        mesh = self.trellis.run(rgba, seed=seed, pipeline_type=pipeline_type)[0]
+        mesh = self.trellis.run(rgbas if len(rgbas) > 1 else rgba, seed=seed, pipeline_type=pipeline_type)[0]
         mark('generation')
 
         # 3. maillage + texture
@@ -121,9 +126,13 @@ class MenuARPipeline:
         base = g.visual.material.baseColorTexture
         tex = np.asarray(base.convert('RGB'), np.float32) / 255; T = tex.shape[0]
         vcol = tex[np.clip(((1 - UV[:, 1]) * (T - 1)).astype(int), 0, T - 1), np.clip((UV[:, 0] * (T - 1)).astype(int), 0, T - 1)]
-        cam = estimate_camera(V, F, P[..., 3] > 127, vertex_colors=vcol, photo_rgb=P[..., :3] / 255.)
+        cams = []
+        for r in rgbas:                                  # angle de prise de vue de chaque photo
+            Pr = np.asarray(r)
+            cams.append(estimate_camera(V, F, Pr[..., 3] > 127, vertex_colors=vcol, photo_rgb=Pr[..., :3] / 255.))
+        cam = cams[0]
         new_tex, stats = recolor_from_photo(base, V, F, UV, rgba, cam)
-        new_tex, paste_stats = paste_photo(new_tex, V, F, UV, rgba, cam)   # la vraie photo sur le dessus
+        new_tex, paste_stats = paste_photo(new_tex, V, F, UV, rgbas, cams)  # les vraies photos là où elles voient
         new_tex = paint_underside(new_tex, V, F, UV)
         tex_path = os.path.join(workdir, 'texture_photo.png'); new_tex.save(tex_path)
         hd_photo = os.path.join(workdir, 'plat_hd_photo.glb')
@@ -138,7 +147,7 @@ class MenuARPipeline:
             torch.cuda.empty_cache()
             try:
                 ia = self.texturer(hd, rgba, cam, workdir)
-                ia, _ = paste_photo(ia, V, F, UV, rgba, cam)   # l'IA complète, la photo reste la photo
+                ia, _ = paste_photo(ia, V, F, UV, rgbas, cams)  # l'IA complète, les photos restent les photos
                 ia = paint_underside(ia, V, F, UV)          # même dessous que la version photo
                 ia_path = os.path.join(workdir, 'texture_ia.png'); ia.save(ia_path)
                 out_path = os.path.join(workdir, 'plat_hd_ia.glb')
@@ -167,5 +176,6 @@ class MenuARPipeline:
                     texture_error=texture_error, version=CODE_VERSION,
                     objets=list(getattr(self.segmenter, 'last_found', []) or []),
                     camera=dict(az=cam['az'], el=cam['el'], roll=cam['roll'], iou=cam['iou']),
+                    photos=len(rgbas), cameras=[dict(az=c['az'], el=c['el'], iou=round(c['iou'], 3)) for c in cams],
                     collage=dict(part=round(paste_stats['from_photo'], 3), recalage=paste_stats['shift']),
                     seconds=timings, size_mb=round(os.path.getsize(mobile) / 1e6, 2))

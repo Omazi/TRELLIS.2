@@ -1,3 +1,4 @@
+from contextlib import contextmanager, nullcontext
 from typing import *
 import torch
 import torch.nn as nn
@@ -490,10 +491,37 @@ class Trellis2ImageTo3DPipeline(Pipeline):
             )
         return out_mesh
     
+    @contextmanager
+    def multi_image_conditioning(self):
+        """Plusieurs photos du même plat : à chaque pas de diffusion, la prédiction du modèle est la
+        moyenne des prédictions conditionnées par chaque photo (« multidiffusion », comme le
+        run_multi_image de TRELLIS 1 et la PR communautaire #104 de TRELLIS.2). Chaque photo tire la
+        forme et la texture vers ce qu'elle montre ; aucune n'a besoin d'être devinée seule."""
+        from .samplers.flow_euler import FlowEulerSampler
+        original = FlowEulerSampler._inference_model
+
+        def averaged(sampler, model, x_t, t, cond=None, **kwargs):
+            if not torch.is_tensor(cond) or cond.shape[0] <= 1 or cond.shape[0] == x_t.shape[0]:
+                return original(sampler, model, x_t, t, cond, **kwargs)
+            if not cond.any():                                   # condition négative (zéros) : une seule passe
+                return original(sampler, model, x_t, t, cond[:1].expand(x_t.shape[0], *cond.shape[1:]), **kwargs)
+            preds = [original(sampler, model, x_t, t, cond[i:i + 1].expand(x_t.shape[0], *cond.shape[1:]), **kwargs)
+                     for i in range(cond.shape[0])]
+            out = preds[0]
+            for p in preds[1:]:
+                out = out + p
+            return out / len(preds)
+
+        FlowEulerSampler._inference_model = averaged
+        try:
+            yield
+        finally:
+            FlowEulerSampler._inference_model = original
+
     @torch.no_grad()
     def run(
         self,
-        image: Image.Image,
+        image: Union[Image.Image, List[Image.Image]],
         num_samples: int = 1,
         seed: int = 42,
         sparse_structure_sampler_params: dict = {},
@@ -508,7 +536,7 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         Run the pipeline.
 
         Args:
-            image (Image.Image): The image prompt.
+            image (Image.Image | list): The image prompt, or several photos of the same object.
             num_samples (int): The number of samples to generate.
             seed (int): The random seed.
             sparse_structure_sampler_params (dict): Additional parameters for the sparse structure sampler.
@@ -538,11 +566,19 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         else:
             raise ValueError(f"Invalid pipeline type: {pipeline_type}")
         
+        images = list(image) if isinstance(image, (list, tuple)) else [image]
         if preprocess_image:
-            image = self.preprocess_image(image)
+            images = [self.preprocess_image(im) for im in images]
         torch.manual_seed(seed)
-        cond_512 = self.get_cond([image], 512)
-        cond_1024 = self.get_cond([image], 1024) if pipeline_type != '512' else None
+        cond_512 = self.get_cond(images, 512)
+        cond_1024 = self.get_cond(images, 1024) if pipeline_type != '512' else None
+        with (self.multi_image_conditioning() if len(images) > 1 else nullcontext()):
+            return self._run_sampling(cond_512, cond_1024, pipeline_type, num_samples,
+                                      sparse_structure_sampler_params, shape_slat_sampler_params,
+                                      tex_slat_sampler_params, return_latent, max_num_tokens)
+
+    def _run_sampling(self, cond_512, cond_1024, pipeline_type, num_samples, sparse_structure_sampler_params,
+                      shape_slat_sampler_params, tex_slat_sampler_params, return_latent, max_num_tokens):
         ss_res = {'512': 32, '1024': 64, '1024_cascade': 32, '1536_cascade': 32}[pipeline_type]
         coords = self.sample_sparse_structure(
             cond_512, ss_res,
