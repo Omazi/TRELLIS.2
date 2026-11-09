@@ -111,6 +111,20 @@ def create_app(run_job: Callable, data_dir: str, access_key: str) -> FastAPI:
         with open(os.path.join(HERE, name), encoding='utf-8') as f:
             return f.read()
 
+    @app.get('/licences', response_class=HTMLResponse)
+    def licences():
+        """Avis de licence des modèles et bibliothèques utilisés (dont la licence DINOv3 de Meta)."""
+        root = os.path.dirname(HERE)
+        parts = []
+        for name in ('LICENCES_VENTE.md', 'third_party/DINOv3_LICENSE.md'):
+            f = os.path.join(root, name)
+            if os.path.exists(f):
+                with open(f, encoding='utf-8') as fh:
+                    parts.append(fh.read().replace('&', '&amp;').replace('<', '&lt;'))
+        return ('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
+                '<title>Licences</title><body style="font:14px system-ui;max-width:760px;margin:24px auto;padding:0 16px">'
+                '<h1>Licences</h1><p>Built with DINOv3.</p>' + ''.join(f'<pre style="white-space:pre-wrap">{t}</pre>' for t in parts))
+
     @app.get('/', response_class=HTMLResponse)
     def home(request: Request):
         check(request)
@@ -177,7 +191,7 @@ def create_app(run_job: Callable, data_dir: str, access_key: str) -> FastAPI:
         if (st.get('result') or {}).get('texture') == 'ia' and os.path.exists(os.path.join(job_dir(jid), 'plat_mobile_photo.glb')):
             extra += TEXTURE_SWITCH.replace('__ID__', jid)
         r = st.get('result') or {}
-        info = f"version {r.get('version', 'ancienne')} · texture {r.get('texture', 'photo')}"
+        info = f"Built with DINOv3 · version {r.get('version', 'ancienne')} · texture {r.get('texture', 'photo')}"
         if r.get('texture_error'):
             info += ' · texture IA en échec : ' + r['texture_error'][:160]
         extra += ('<div style="position:fixed;left:8px;bottom:6px;z-index:99;font:11px system-ui;color:#9a9288">'
