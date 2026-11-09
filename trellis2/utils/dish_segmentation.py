@@ -102,8 +102,10 @@ class AutoDishSegmenter:
                 if m.sum() < 0.001 * H * W:
                     continue
                 name = self.items[int(c)]
-                if name in CONTAINERS and m.mean() > 0.03:
-                    # grand contenant : enveloppe convexe seulement autour de ce que le détourage a vu
+                solid = m.sum() / max(1, convex_hull_image(m).sum())
+                if name in CONTAINERS and m.mean() > 0.03 and solid < 0.85:
+                    # grand contenant au masque en lambeaux (une assiette nette et pleine est gardée telle
+                    # quelle) : enveloppe convexe seulement autour de ce que le détourage a vu
                     # (le masque YOLOE d'une assiette déborde en fines bavures sur le set de table) ;
                     # les parties épaisses du masque loin de la nourriture (parois d'une boîte) restent.
                     thick = ndimage.binary_opening(m, iterations=max(2, int(0.01 * max(H, W))))
@@ -123,8 +125,17 @@ class AutoDishSegmenter:
         lab, n = ndimage.label(elements)
         sizes = ndimage.sum(elements, lab, range(1, n + 1))
         biggest = lab == 1 + int(np.argmax(sizes))
+        # un petit morceau détaché (raisin, miette du décor) n'est gardé que s'il touche presque le plat ;
+        # un objet détecté (sauce, sachet) peut être un peu plus loin
+        touching = ndimage.binary_dilation(biggest, iterations=max(2, int(0.008 * max(H, W))))
         close_by = ndimage.binary_dilation(biggest, iterations=max(3, int(0.05 * max(H, W))))
-        keep_ids = [k + 1 for k in range(n) if sizes[k] >= 0.02 * H * W or (close_by & (lab == k + 1)).any()]
+        items_mask = np.logical_or.reduce(parts[:n_items]) if n_items else np.zeros((H, W), bool)
+        def keep(k):
+            comp = lab == k + 1
+            if sizes[k] >= 0.02 * H * W or (touching & comp).any():
+                return True
+            return bool((close_by & comp).any() and (comp & items_mask).sum() > 0.5 * comp.sum())
+        keep_ids = [k + 1 for k in range(n) if keep(k)]
         main = np.isin(lab, keep_ids)
         hull = np.zeros((H, W), bool)
         r_close = max(2, int(0.012 * max(H, W)))
