@@ -47,8 +47,12 @@ class MenuARPipeline:
             trellis_pipeline = Trellis2ImageTo3DPipeline.from_pretrained(model_id, load_rembg=False)
             trellis_pipeline.cuda()
         if segmenter is None:
-            from trellis2.utils.dish_segmentation import AutoDishSegmenter
-            segmenter = AutoDishSegmenter()
+            if os.environ.get('MENU_AR_LIBRE') == '1':      # version vente : uniquement des modèles libres
+                from trellis2.utils.dish_segmentation import OpenDishSegmenter
+                segmenter = OpenDishSegmenter()
+            else:
+                from trellis2.utils.dish_segmentation import AutoDishSegmenter
+                segmenter = AutoDishSegmenter()
         self.texturer_error = None
         if hd_texture and texturer is None:
             try:

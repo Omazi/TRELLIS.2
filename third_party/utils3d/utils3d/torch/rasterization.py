@@ -1,7 +1,7 @@
 from typing import *
 
 import torch
-import nvdiffrast.torch as dr
+from menu_raster import backend as _raster_backend; dr = _raster_backend()  # notre rasteriseur (MENU_AR_RASTER=nvdiffrast pour comparer)
 
 from . import utils, transforms, mesh
 from ._helpers import batched

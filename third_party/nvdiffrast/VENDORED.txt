@@ -1,1 +1,0 @@
-nvdiffrast v0.4.0 vendored from https://github.com/NVlabs/nvdiffrast. License: NVIDIA Source Code License (NON-COMMERCIAL: research/evaluation only) — must be replaced before commercial use.

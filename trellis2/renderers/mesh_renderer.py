@@ -42,7 +42,7 @@ class MeshRenderer:
         """
     def __init__(self, rendering_options={}, device='cuda'):
         if 'dr' not in globals():
-            import nvdiffrast.torch as dr
+            from menu_raster import backend as _raster_backend; dr = _raster_backend()  # notre rasteriseur (MENU_AR_RASTER=nvdiffrast pour comparer)
         
         self.rendering_options = edict({
             "resolution": None,
@@ -82,7 +82,7 @@ class MeshRenderer:
                 mask (torch.Tensor): [H, W] rendered mask image
         """
         if 'dr' not in globals():
-            import nvdiffrast.torch as dr
+            from menu_raster import backend as _raster_backend; dr = _raster_backend()  # notre rasteriseur (MENU_AR_RASTER=nvdiffrast pour comparer)
             
         resolution = self.rendering_options["resolution"]
         near = self.rendering_options["near"]

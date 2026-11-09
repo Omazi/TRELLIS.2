@@ -19,7 +19,7 @@ def cube_to_dir(s, x, y):
 
 def latlong_to_cubemap(latlong_map, res):
     if 'dr' not in globals():
-        import nvdiffrast.torch as dr
+        from menu_raster import backend as _raster_backend; dr = _raster_backend()  # notre rasteriseur (MENU_AR_RASTER=nvdiffrast pour comparer)
     cubemap = torch.zeros(6, res[0], res[1], latlong_map.shape[-1], dtype=torch.float32, device='cuda')
     for s in range(6):
         gy, gx = torch.meshgrid(torch.linspace(-1.0 + 1.0 / res[0], 1.0 - 1.0 / res[0], res[0], device='cuda'), 
@@ -54,7 +54,7 @@ class EnvMap:
     
     def sample(self, directions: torch.Tensor):
         if 'dr' not in globals():
-            import nvdiffrast.torch as dr
+            from menu_raster import backend as _raster_backend; dr = _raster_backend()  # notre rasteriseur (MENU_AR_RASTER=nvdiffrast pour comparer)
         return dr.texture(
             self._backend.base.unsqueeze(0),
             directions.unsqueeze(0),
@@ -196,7 +196,7 @@ class PbrMeshRenderer:
         """
     def __init__(self, rendering_options={}, device='cuda'):
         if 'dr' not in globals():
-            import nvdiffrast.torch as dr
+            from menu_raster import backend as _raster_backend; dr = _raster_backend()  # notre rasteriseur (MENU_AR_RASTER=nvdiffrast pour comparer)
         
         self.rendering_options = edict({
             "resolution": None,
@@ -238,7 +238,7 @@ class PbrMeshRenderer:
                 roughness (torch.Tensor): [H, W] roughness image
         """
         if 'dr' not in globals():
-            import nvdiffrast.torch as dr
+            from menu_raster import backend as _raster_backend; dr = _raster_backend()  # notre rasteriseur (MENU_AR_RASTER=nvdiffrast pour comparer)
             
         if not isinstance(envmap, dict):
             envmap = {'' : envmap}

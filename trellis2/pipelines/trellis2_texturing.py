@@ -10,7 +10,7 @@ from ..modules.sparse import SparseTensor
 from ..modules import image_feature_extractor
 import o_voxel
 import cumesh
-import nvdiffrast.torch as dr
+from menu_raster import backend as _raster_backend; dr = _raster_backend()  # notre rasteriseur (MENU_AR_RASTER=nvdiffrast pour comparer)
 import cv2
 import flex_gemm
 

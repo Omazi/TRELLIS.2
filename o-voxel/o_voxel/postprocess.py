@@ -7,7 +7,7 @@ from PIL import Image
 import trimesh
 import trimesh.visual
 from flex_gemm.ops.grid_sample import grid_sample_3d
-import nvdiffrast.torch as dr
+from menu_raster import backend as _raster_backend; dr = _raster_backend()  # notre rasteriseur (MENU_AR_RASTER=nvdiffrast pour comparer)
 import cumesh
 
 

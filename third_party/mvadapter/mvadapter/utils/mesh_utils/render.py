@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import List, Optional, Union
 
 import numpy as np
-import nvdiffrast.torch as dr
+from menu_raster import backend as _raster_backend; dr = _raster_backend()  # notre rasteriseur (MENU_AR_RASTER=nvdiffrast pour comparer)
 import torch
 import torch.nn.functional as F
 import trimesh
