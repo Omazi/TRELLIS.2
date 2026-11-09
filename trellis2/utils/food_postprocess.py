@@ -108,3 +108,21 @@ def floating_bits(V, F, max_area: float = 0.02, min_gap: float = 0.02) -> np.nda
         if d.min() > min_gap * size:
             drop[c] = True
     return drop
+
+
+def rim_color_from_photo(rgba, band: float = 0.03, shade: float = 0.9):
+    """Couleur du contenant vue SUR LA PHOTO : médiane des pixels de la bande extérieure du
+    détourage (bord de l'assiette, de la planche, du bol, de la boîte). Sert au dessous du modèle,
+    que la photo ne montre jamais : mieux vaut la vraie couleur du bord que celle des flancs
+    inventés (striés, souvent sombres)."""
+    from scipy import ndimage
+    a = np.asarray(rgba.convert('RGBA'))
+    m = a[..., 3] > 127
+    if m.sum() < 500:
+        return None
+    k = max(2, int(band * max(m.shape)))
+    ring = m & ~ndimage.binary_erosion(m, iterations=k)
+    ring &= ndimage.binary_erosion(m, iterations=2)          # sans le liseré adouci du détourage
+    if ring.sum() < 200:
+        return None
+    return tuple(float(c) for c in np.median(a[..., :3][ring].astype(np.float32), axis=0) * shade)

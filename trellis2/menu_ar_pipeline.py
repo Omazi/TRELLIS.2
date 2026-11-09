@@ -79,7 +79,7 @@ class MenuARPipeline:
             progress: Optional[Callable[[str], None]] = None) -> dict:
         import o_voxel
         import trimesh
-        from trellis2.utils.food_postprocess import solidify_base, paint_underside, floating_bits
+        from trellis2.utils.food_postprocess import solidify_base, paint_underside, floating_bits, rim_color_from_photo
         from trellis2.utils.photo_projection import estimate_camera, recolor_from_photo, paste_photo
 
         os.makedirs(workdir, exist_ok=True)
@@ -131,7 +131,8 @@ class MenuARPipeline:
         cam = estimate_camera(V, F, P[..., 3] > 127, vertex_colors=vcol, photo_rgb=P[..., :3] / 255.)
         new_tex, stats = recolor_from_photo(base, V, F, UV, rgba, cam)
         new_tex, paste_stats = paste_photo(new_tex, V, F, UV, rgba, cam)   # la vraie photo sur le dessus
-        new_tex = paint_underside(new_tex, V, F, UV)
+        under = rim_color_from_photo(rgba)                 # dessous = couleur du bord du contenant sur la photo
+        new_tex = paint_underside(new_tex, V, F, UV, color=under)
         tex_path = os.path.join(workdir, 'texture_photo.png'); new_tex.save(tex_path)
         hd_photo = os.path.join(workdir, 'plat_hd_photo.glb')
         self._node('retexture.mjs', hd, tex_path, hd_photo)
@@ -146,7 +147,7 @@ class MenuARPipeline:
             try:
                 ia = self.texturer(hd, rgba, cam, workdir)
                 ia, _ = paste_photo(ia, V, F, UV, rgba, cam)   # l'IA complète, la photo reste la photo
-                ia = paint_underside(ia, V, F, UV)          # même dessous que la version photo
+                ia = paint_underside(ia, V, F, UV, color=under)   # même dessous que la version photo
                 ia_path = os.path.join(workdir, 'texture_ia.png'); ia.save(ia_path)
                 out_path = os.path.join(workdir, 'plat_hd_ia.glb')
                 self._node('retexture.mjs', hd, ia_path, out_path)
